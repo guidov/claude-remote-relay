@@ -434,9 +434,18 @@ Run in anger on Windows 11 (`claude.exe`, PowerShell tooling) driven from Linux
 over Tailscale. Still unexercised: the `.cmd` shim wrapper in `child_argv`, since
 that install used `claude.exe` directly.
 
-`/health` reports **`bridge_pid`** and **`child_pid`** separately — they are two
-processes, and a single `pid` field invites matching the wrong one against
-`ps` / `Get-Process`.
+`/health` names the bridge and its child separately — **`bridge_pid`** /
+**`child_pid`**, **`bridge_uptime_s`** / **`child_uptime_s`**. They are two
+processes with different lifetimes: a `restart` resets the child's while the
+bridge's keeps climbing. A single `pid` or `uptime_s` field invites matching the
+wrong one against `ps` / `Get-Process` and reading a correct answer as a stale
+one.
+
+Watcher disconnects are caught as **`ConnectionError`**, not a tuple of specific
+subclasses. "The peer went away" is `BrokenPipeError` or `ConnectionResetError`
+on POSIX but `ConnectionAbortedError` (WinError 10053) on Windows; they are
+siblings, so any tuple of two misses the third and the traceback escapes to
+`socketserver` — once per watcher hangup, i.e. every `stream` Ctrl-C.
 
 ## Security
 

@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 HOST = os.environ.get("CLAUDE_BRIDGE_HOST", "127.0.0.1")
@@ -57,6 +57,8 @@ MODEL = os.environ.get("CLAUDE_BRIDGE_MODEL", "")
 PERMISSION_MODE = os.environ.get("CLAUDE_BRIDGE_PERMISSION_MODE", "acceptEdits")
 EXTRA_ARGS = shlex.split(os.environ.get("CLAUDE_BRIDGE_ARGS", ""))
 STREAM = os.environ.get("CLAUDE_BRIDGE_STREAM", "1") not in ("0", "false", "no")
+
+BRIDGE_STARTED_AT = time.time()
 
 DEFAULT_TURN_TIMEOUT = 900.0
 EVENT_HISTORY = 4000
@@ -436,7 +438,10 @@ class Session:
                 "cwd": CHILD_CWD,
                 "model": MODEL or "(cli default)",
                 "permission_mode": PERMISSION_MODE,
-                "uptime_s": round(time.time() - self.started_at, 1),
+                # started_at is reset by start(), so this tracks the child, not
+                # the server. A restart makes it drop while the bridge keeps going.
+                "child_uptime_s": round(time.time() - self.started_at, 1),
+                "bridge_uptime_s": round(time.time() - BRIDGE_STARTED_AT, 1),
             }
 
 
@@ -459,7 +464,10 @@ class Handler(BaseHTTPRequestHandler):
         """
         try:
             super().handle_one_request()
-        except (ConnectionResetError, BrokenPipeError):
+        except ConnectionError:
+            # Every spelling of "the peer went away": BrokenPipeError and
+            # ConnectionResetError on POSIX, ConnectionAbortedError (WinError
+            # 10053) on Windows. They are siblings, so a tuple of two misses one.
             self.close_connection = True
 
     # ---- helpers ---------------------------------------------------------
@@ -524,8 +532,8 @@ class Handler(BaseHTTPRequestHandler):
                 payload = json.dumps(item, separators=(",", ":"))
                 self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass  # watcher hung up; normal
+        except ConnectionError:
+            pass  # watcher hung up; normal, in any of its platform spellings
         finally:
             session.unsubscribe(channel)
 
