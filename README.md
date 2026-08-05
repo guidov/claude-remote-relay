@@ -140,6 +140,47 @@ ahead, and stop when they need me."*
 **Every hop is a real turn on a real machine, billed on both.** Keep `max_turns`
 low. The CLI prints running cost, and the tool reports the total.
 
+### Watching them type
+
+Turn-granular output means nothing appears until a hop finishes — which can be
+half a minute of silence. `--stream` renders each machine's text as it is
+produced:
+
+```bash
+relay.py converse remote local --stream --max-turns 4 --opening "…"
+```
+
+```
+local │ Hello local2 — what's the working directory you're operating in?
+  [local done: 3.8s, $0.1121]
+
+  · local2 runs Bash
+local2 │ I'm operating in `/home/guido/relay-workspace2`. It is not a git repo…
+  [local2 done: 10.5s, $0.1323, 1 denied]
+```
+
+A streamer follows whichever machine holds the turn. Tool calls appear as they
+are invoked, so a long silent stretch is visibly *work* rather than a hang.
+
+To watch one machine on its own — useful in a second terminal while something
+else drives it:
+
+```bash
+relay.py --host remote stream            # add --thinking for reasoning
+```
+
+This is a **human-facing** feature. `remote_converse` over MCP still returns one
+transcript at the end, because a tool result cannot stream into a model's
+context mid-call. Use the CLI when you want to watch.
+
+**How it works.** The bridge runs its child with `--include-partial-messages`
+and exposes `GET /stream` as server-sent events. Partial deltas are fanned out
+to watchers but deliberately kept **out** of the history deque — one streamed
+turn would otherwise evict the real events that `/transcript` and turn
+summarising depend on. Each watcher gets a bounded queue; one too slow to keep
+up drops frames rather than stalling the session. Set `CLAUDE_BRIDGE_STREAM=0`
+to disable partial messages entirely.
+
 ### Loop protection
 
 Two machines that can each drive the other can bounce a prompt back and forth
@@ -259,6 +300,8 @@ git diff | relay.py send -                        # pipe stdin
 JOB=$(relay.py send -b "full regression run")     # background
 relay.py result "$JOB" --wait 600
 relay.py converse remote local --opening "agree on a plan" --max-turns 4
+relay.py converse remote local --stream --opening "…"   # watch them type
+relay.py --host remote stream                     # watch one machine, live
 relay.py watch --follow                           # tail a running turn
 relay.py interrupt
 relay.py restart --fresh                          # drop context
@@ -352,6 +395,13 @@ and then emits a `result` with `is_error: true`. Text produced before the
 interrupt is still in the `assistant` events, which is why the bridge keeps
 `assistant_text` separately from `result`.
 
+**Partial messages.** With `--include-partial-messages` the child also emits
+`stream_event` wrappers around the standard Anthropic streaming shapes —
+`message_start`, `content_block_start`, `content_block_delta`
+(`delta.text_delta.text` is the typed text), `content_block_stop`,
+`message_delta`, `message_stop`. The bridge's `/stream` frames are
+double-wrapped: `{"index":N,"event":{"type":"stream_event","event":{…}}}`.
+
 Required flags: `--input-format stream-json` needs `--print` and
 `--output-format stream-json`; `--verbose` is what surfaces the `system` init
 event carrying the session id.
@@ -375,6 +425,8 @@ Tested end to end against a live bridge:
 - loop protection: relay-back blocked, onward relay allowed, depth limit
   enforced, stale chain markers expired by TTL
 - a bridge publishing its inbound chain during a turn and clearing it after
+- SSE streaming: token deltas and tool markers arriving live, and a full
+  `converse --stream` exchange rendered as it was typed
 
 Not yet exercised: the Windows-specific paths (the `.cmd` shim wrapper, the
 firewall prompt). The bridge has only been run on Linux so far. The two-machine

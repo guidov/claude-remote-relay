@@ -44,7 +44,7 @@ def halt_reason(text: str) -> str | None:
 
 
 def converse(hosts: list[str], opening: str, max_turns: int = 6,
-             timeout: float = 900.0, on_turn=None) -> dict:
+             timeout: float = 900.0, on_turn=None, stream: bool = False) -> dict:
     """Shuttle messages between two hosts until something says stop.
 
     Returns the transcript plus why it ended. `on_turn(entry)` is called after
@@ -71,6 +71,12 @@ def converse(hosts: list[str], opening: str, max_turns: int = 6,
             payload_prompt = BRIEFING.format(peer=peer, message=message)
             briefed.add(target)
 
+        # Follow whichever machine currently holds the turn, so the exchange is
+        # visible as it is typed rather than only when the hop completes.
+        streamer = None
+        if stream:
+            from relay_stream import Streamer
+            streamer = Streamer(target).start()
         try:
             result = call("POST", "/prompt",
                           {"prompt": payload_prompt, "timeout_seconds": timeout,
@@ -81,6 +87,9 @@ def converse(hosts: list[str], opening: str, max_turns: int = 6,
                                "error": f"[{exc.code}] {exc.message}"})
             stopped = f"error:{exc.code}"
             break
+        finally:
+            if streamer:
+                streamer.stop()
 
         text = result.get("result") or result.get("assistant_text") or ""
         cost = result.get("total_cost_usd") or 0.0

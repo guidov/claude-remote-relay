@@ -36,6 +36,7 @@ from relay_config import (  # noqa: E402
     resolve, self_name,
 )
 from relay_converse import converse  # noqa: E402
+from relay_stream import watch as watch_stream  # noqa: E402
 
 
 def print_turn(result: dict, as_json: bool) -> int:
@@ -59,8 +60,22 @@ def cmd_converse(args: argparse.Namespace) -> int:
         print(entry["text"])
         print()
 
+    def footer(entry: dict) -> None:
+        # The text already arrived live; only the accounting is still news.
+        denials = entry.get("permission_denials") or 0
+        note = f", {denials} denied" if denials else ""
+        print(f"  [{entry['host']} turn {entry['turn']}: "
+              f"{entry['duration_ms'] / 1000:.1f}s, ${entry['cost_usd']:.4f}{note}]\n",
+              file=sys.stderr)
+
+    if args.json:
+        hook = None
+    elif args.stream:
+        hook = footer
+    else:
+        hook = show
     outcome = converse(args.hosts, args.opening, max_turns=args.max_turns,
-                       timeout=args.timeout, on_turn=None if args.json else show)
+                       timeout=args.timeout, on_turn=hook, stream=args.stream)
     if args.json:
         print(json.dumps(outcome, indent=2))
     else:
@@ -164,6 +179,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
         time.sleep(args.interval)
 
 
+def cmd_stream(args: argparse.Namespace) -> int:
+    name, _ = resolve(args.host)
+    print(f"[streaming {name} — Ctrl-C to stop]", file=sys.stderr)
+    return watch_stream(name, show_thinking=args.thinking)
+
+
 def cmd_interrupt(args: argparse.Namespace) -> int:
     print(json.dumps(call("POST", "/interrupt", {}, host=args.host, timeout=20.0)))
     return 0
@@ -209,6 +230,8 @@ def main() -> int:
     talk.add_argument("--opening", required=True, help="first message, sent to HOST 1")
     talk.add_argument("--max-turns", type=int, default=6, dest="max_turns")
     talk.add_argument("--timeout", type=float, default=900.0)
+    talk.add_argument("--stream", "-s", action="store_true",
+                      help="render each machine's text live, as it is typed")
     talk.add_argument("--json", action="store_true")
     talk.set_defaults(func=cmd_converse)
 
@@ -220,6 +243,10 @@ def main() -> int:
     watch.add_argument("--follow", "-f", action="store_true")
     watch.add_argument("--interval", type=float, default=2.0)
     watch.set_defaults(func=cmd_watch)
+
+    live = sub.add_parser("stream", help="watch a machine type, live")
+    live.add_argument("--thinking", action="store_true", help="also show reasoning")
+    live.set_defaults(func=cmd_stream)
 
     interrupt = sub.add_parser("interrupt", help="stop the running turn")
     interrupt.set_defaults(func=cmd_interrupt)

@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 
 TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 HOST = os.environ.get("CLAUDE_BRIDGE_HOST", "127.0.0.1")
@@ -56,10 +56,12 @@ CHILD_CWD = os.environ.get("CLAUDE_BRIDGE_CWD") or os.getcwd()
 MODEL = os.environ.get("CLAUDE_BRIDGE_MODEL", "")
 PERMISSION_MODE = os.environ.get("CLAUDE_BRIDGE_PERMISSION_MODE", "acceptEdits")
 EXTRA_ARGS = shlex.split(os.environ.get("CLAUDE_BRIDGE_ARGS", ""))
+STREAM = os.environ.get("CLAUDE_BRIDGE_STREAM", "1") not in ("0", "false", "no")
 
 DEFAULT_TURN_TIMEOUT = 900.0
 EVENT_HISTORY = 4000
 JOB_HISTORY = 200
+SUBSCRIBER_BACKLOG = 2000  # per-watcher; a stalled watcher drops rather than stalls
 
 
 class BridgeError(Exception):
@@ -91,6 +93,9 @@ def child_argv() -> list[str]:
         "--verbose",
         "--permission-mode", PERMISSION_MODE,
     ]
+    if STREAM:
+        # Token-level deltas, so a watcher can see text as it is produced.
+        argv.append("--include-partial-messages")
     if MODEL:
         argv += ["--model", MODEL]
     argv += EXTRA_ARGS
@@ -149,7 +154,29 @@ class Session:
         self.started_at = 0.0
         self.jobs: dict[str, Job] = {}
         self.job_order: deque[str] = deque(maxlen=JOB_HISTORY)
+        self.subscribers: set[queue.Queue] = set()
         self.start()
+
+    # ---- live watchers ---------------------------------------------------
+
+    def subscribe(self) -> queue.Queue:
+        channel: queue.Queue = queue.Queue(maxsize=SUBSCRIBER_BACKLOG)
+        with self.state:
+            self.subscribers.add(channel)
+        return channel
+
+    def unsubscribe(self, channel: queue.Queue) -> None:
+        with self.state:
+            self.subscribers.discard(channel)
+
+    def _fanout(self, item: dict) -> None:
+        with self.state:
+            channels = list(self.subscribers)
+        for channel in channels:
+            try:
+                channel.put_nowait(item)
+            except queue.Full:
+                pass  # a watcher too slow to keep up loses frames, not the session
 
     # ---- child lifecycle -------------------------------------------------
 
@@ -222,6 +249,12 @@ class Session:
                 log(f"child stderr: {line.rstrip()[:400]}")
 
     def _record(self, event: dict) -> None:
+        # Partial deltas are for live watchers only. Keeping them out of the
+        # history deque stops a single streamed turn from evicting the real
+        # events that /transcript and turn summarising depend on.
+        if event.get("type") == "stream_event":
+            self._fanout({"index": None, "event": event})
+            return
         with self.state:
             self.cursor += 1
             index = self.cursor
@@ -229,6 +262,7 @@ class Session:
             sid = event.get("session_id")
             if sid:
                 self.session_id = sid
+        self._fanout({"index": index, "event": event})
         if event.get("type") == "result":
             self.results.put({"index": index, "event": event})
 
@@ -446,6 +480,40 @@ class Handler(BaseHTTPRequestHandler):
         self._fail(BridgeError("unauthorized", "bad or missing bearer token", 401))
         return False
 
+    def _stream(self, session: Session) -> None:
+        """Server-sent events: every event as the child produces it.
+
+        Held open until the client disconnects. Includes `stream_event` deltas,
+        which is what makes text visible as it is typed rather than per turn.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        channel = session.subscribe()
+        try:
+            self.wfile.write(b": connected\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    item = channel.get(timeout=15.0)
+                except queue.Empty:
+                    # A comment frame doubles as a keepalive and as the write
+                    # that surfaces a client which has gone away.
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    continue
+                payload = json.dumps(item, separators=(",", ":"))
+                self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # watcher hung up; normal
+        finally:
+            session.unsubscribe(channel)
+
     # ---- routes ----------------------------------------------------------
 
     def do_GET(self) -> None:
@@ -461,6 +529,8 @@ class Handler(BaseHTTPRequestHandler):
                 since = int(params.get("since", 0))
                 limit = min(int(params.get("limit", 100)), 500)
                 self._send(200, SESSION.transcript(since, limit))
+            elif path == "/stream":
+                self._stream(SESSION)
             elif path == "/jobs":
                 limit = min(int(params.get("limit", 20)), JOB_HISTORY)
                 self._send(200, {"jobs": SESSION.list_jobs(limit)})
