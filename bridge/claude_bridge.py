@@ -24,6 +24,8 @@ Environment:
     CLAUDE_BRIDGE_PERMISSION_MODE   --permission-mode (default acceptEdits)
     CLAUDE_BRIDGE_ARGS     extra args for the child, shell-quoted
     CLAUDE_BRIDGE_CLAUDE_BIN  full path to `claude` (for a service PATH that omits it)
+    CLAUDE_BRIDGE_LOG      write a dated log here (a service discards stdout)
+    CLAUDE_BRIDGE_LOG_MAX_BYTES  rotate to .1 past this size (default 5MB)
 """
 
 from __future__ import annotations
@@ -49,7 +51,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.5.1"
+VERSION = "0.6.0"
 
 
 def _load_token() -> str:
@@ -74,6 +76,12 @@ MODEL = os.environ.get("CLAUDE_BRIDGE_MODEL", "")
 PERMISSION_MODE = os.environ.get("CLAUDE_BRIDGE_PERMISSION_MODE", "acceptEdits")
 EXTRA_ARGS = shlex.split(os.environ.get("CLAUDE_BRIDGE_ARGS", ""))
 STREAM = os.environ.get("CLAUDE_BRIDGE_STREAM", "1") not in ("0", "false", "no")
+# A service manager usually discards stdout, and for an always-on bridge the log
+# is the only forensics there is. Writing it ourselves avoids needing a shell
+# wrapper just to redirect.
+LOG_FILE = os.environ.get("CLAUDE_BRIDGE_LOG")
+LOG_MAX_BYTES = int(os.environ.get("CLAUDE_BRIDGE_LOG_MAX_BYTES", "5000000"))
+_LOG_LOCK = threading.Lock()
 
 BRIDGE_STARTED_AT = time.time()
 
@@ -137,6 +145,17 @@ class BridgeError(Exception):
 
 def log(msg: str) -> None:
     print(f"[bridge {time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+    if not LOG_FILE:
+        return
+    # Dated in the file: a service log outlives the day its lines were written.
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+    with _LOG_LOCK:
+        path = Path(LOG_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file() and path.stat().st_size + len(line) > LOG_MAX_BYTES:
+            path.replace(path.with_suffix(path.suffix + ".1"))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
 
 
 def claude_executable() -> str:

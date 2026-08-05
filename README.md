@@ -311,7 +311,8 @@ Three things that bite if you skip them:
   A bridge that dies silently after 72 hours is the same invisible failure as an
   amnesiac restart, arriving by another road. `[TimeSpan]::Zero` is unlimited.
 - **`MultipleInstances IgnoreNew`** stops a second instance fighting for 8787 if
-  the trigger fires while one is already up.
+  the trigger fires while one is already up. It is also what makes the repeating
+  heal trigger below safe.
 - **`claude` must be findable from the service's PATH**, not just your shell's.
   Check with `[Environment]::GetEnvironmentVariable("PATH","User")` before
   registering. The bridge falls back to the usual install locations and you can
@@ -323,9 +324,51 @@ Three things that bite if you skip them:
 Verify the environment actually reached the task by reading `permission_mode`
 back from `/health`: it can only be right if inheritance worked.
 
-Use `-AtStartup` with stored credentials if you need it up before anyone logs
-in. NSSM works too and gives real service semantics; Task Scheduler avoids the
-extra dependency.
+Use `-AtStartup` with stored credentials if you need it up before anyone logs in.
+
+#### Restart-on-failure does not restart a dead process
+
+Task Scheduler's `RestartCount` / `RestartInterval` apply when the task **fails
+to launch** — not when the launched process exits. Kill the bridge and the
+action has already succeeded: the task records a result and considers itself
+finished. It never comes back. This is *not* the counterpart to systemd's
+`Restart=on-failure`, which genuinely restarts.
+
+Measured: `RestartCount 3 / RestartInterval PT1M`, bridge killed, port still
+down after 150s, task state `Ready`, last result `0xFFFFFFFF`.
+
+Add a **repeating trigger** instead, and let `MultipleInstances IgnoreNew` do
+the work — if the bridge is up the launch is dropped, if it died the trigger
+starts it:
+
+```powershell
+$logon  = New-ScheduledTaskTrigger -AtLogOn
+$heal   = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+            -RepetitionInterval (New-TimeSpan -Minutes 1)
+Set-ScheduledTask -TaskName "claude-relay-bridge" -Trigger $logon, $heal
+```
+
+Recovery is then bounded by the repetition interval — measured at ~50s to heal.
+NSSM gives real service semantics if you would rather have them; Task Scheduler
+avoids the extra dependency but needs this pattern to be self-healing at all.
+
+Clearing a recovery policy wants both fields gone: setting `RestartCount = 0`
+while `RestartInterval` is still set fails with `The task XML is missing a
+required element or attribute (53,8):Count`. Drop both, or re-register clean.
+
+#### Give it somewhere to log
+
+A service manager discards stdout, so an always-on bridge has no forensics —
+you cannot see `resuming saved session` or a child's stderr. Set
+**`CLAUDE_BRIDGE_LOG`** and the bridge writes its own dated log, no shell
+wrapper needed:
+
+```powershell
+[Environment]::SetEnvironmentVariable("CLAUDE_BRIDGE_LOG", "$HOME\claude-relay.log", "User")
+```
+
+It rotates to `.1` at `CLAUDE_BRIDGE_LOG_MAX_BYTES` (default 5 MB), so it will
+not grow without bound on a machine nobody is watching.
 
 ### Linux (systemd user unit)
 
@@ -530,6 +573,8 @@ Tested end to end against a live bridge:
 - loop protection: relay-back blocked, onward relay allowed, depth limit
   enforced, stale chain markers expired by TTL
 - a bridge publishing its inbound chain during a turn and clearing it after
+- Linux -> Linux across the tailnet between two different machines, streamed,
+  alongside the Windows <-> Linux path
 - SSE streaming: token deltas and tool markers arriving live, and a full
   `converse --stream` exchange rendered as it was typed
 - streaming **across a real tailnet**, Windows <-> Linux: a 40s idle SSE
