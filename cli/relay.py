@@ -31,7 +31,11 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
 
-from relay_config import RelayError, call, load_hosts  # noqa: E402
+from relay_config import (  # noqa: E402
+    RelayError, call, load_hosts, outbound_chain, read_inbound_chain, resolve,
+    self_name,
+)
+from relay_converse import converse  # noqa: E402
 
 
 def print_turn(result: dict, as_json: bool) -> int:
@@ -48,8 +52,30 @@ def print_turn(result: dict, as_json: bool) -> int:
     return 0 if result.get("ok", True) else 1
 
 
+def cmd_converse(args: argparse.Namespace) -> int:
+    def show(entry: dict) -> None:
+        print(f"--- {entry['turn']}. {entry['host']} "
+              f"({entry['duration_ms'] / 1000:.1f}s, ${entry['cost_usd']:.4f}) ---")
+        print(entry["text"])
+        print()
+
+    outcome = converse(args.hosts, args.opening, max_turns=args.max_turns,
+                       timeout=args.timeout, on_turn=None if args.json else show)
+    if args.json:
+        print(json.dumps(outcome, indent=2))
+    else:
+        print(f"[{outcome['turns']} turns · ${outcome['total_cost_usd']:.4f} · "
+              f"ended: {outcome['stopped_because']}]", file=sys.stderr)
+    return 0 if outcome["stopped_because"] in ("complete", "needs_user_input") else 1
+
+
 def cmd_peers(args: argparse.Namespace) -> int:
     hosts, default = load_hosts()
+    print(f"this machine: {self_name()}")
+    chain = read_inbound_chain()
+    if chain:
+        print(f"running a relayed turn from: {' -> '.join(chain)}")
+    print()
     for name, entry in sorted(hosts.items()):
         marker = " (default)" if name == default else ""
         try:
@@ -69,8 +95,9 @@ def cmd_send(args: argparse.Namespace) -> int:
     prompt = sys.stdin.read() if args.prompt == "-" else args.prompt
     if not prompt.strip():
         sys.exit("empty prompt")
+    target, _ = resolve(args.host)
     payload = {"prompt": prompt, "timeout_seconds": args.timeout,
-               "async": args.background}
+               "async": args.background, "chain": outbound_chain(target)}
     result = call("POST", "/prompt", payload, host=args.host,
                   timeout=(30.0 if args.background else args.timeout + 30))
     if args.background:
@@ -173,6 +200,15 @@ def main() -> int:
     jobs = sub.add_parser("jobs", help="list recent jobs")
     jobs.add_argument("--limit", type=int, default=20)
     jobs.set_defaults(func=cmd_jobs)
+
+    talk = sub.add_parser("converse", help="let two machines talk to each other")
+    talk.add_argument("hosts", nargs=2, metavar="HOST",
+                      help="the two machines, in speaking order")
+    talk.add_argument("--opening", required=True, help="first message, sent to HOST 1")
+    talk.add_argument("--max-turns", type=int, default=6, dest="max_turns")
+    talk.add_argument("--timeout", type=float, default=900.0)
+    talk.add_argument("--json", action="store_true")
+    talk.set_defaults(func=cmd_converse)
 
     status = sub.add_parser("status", help="show remote session health")
     status.set_defaults(func=cmd_status)

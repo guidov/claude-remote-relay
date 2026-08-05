@@ -42,7 +42,11 @@ import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "0.2.0"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
+
+from relay_config import write_inbound_chain  # noqa: E402
+
+VERSION = "0.3.0"
 
 TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 HOST = os.environ.get("CLAUDE_BRIDGE_HOST", "127.0.0.1")
@@ -100,10 +104,14 @@ def child_argv() -> list[str]:
 class Job:
     """One submitted turn. Runs on a worker thread so callers may poll instead of block."""
 
-    def __init__(self, prompt: str, timeout: float) -> None:
+    def __init__(self, prompt: str, timeout: float,
+                 chain: list[str] | None = None) -> None:
         self.id = f"job-{uuid.uuid4().hex[:12]}"
         self.prompt = prompt
         self.timeout = timeout
+        # Machines that already relayed this request, so the session we are
+        # about to run can refuse to bounce it back to one of them.
+        self.chain = chain or []
         self.status = "queued"          # queued | running | done | error
         self.result: dict | None = None
         self.error: dict | None = None
@@ -226,8 +234,9 @@ class Session:
 
     # ---- turns -----------------------------------------------------------
 
-    def submit(self, prompt: str, timeout: float) -> Job:
-        job = Job(prompt, timeout)
+    def submit(self, prompt: str, timeout: float,
+               chain: list[str] | None = None) -> Job:
+        job = Job(prompt, timeout, chain)
         with self.state:
             self.jobs[job.id] = job
             self.job_order.append(job.id)
@@ -272,6 +281,10 @@ class Session:
                 while not self.results.empty():
                     self.results.get_nowait()
 
+                # Visible to this machine's own MCP server for the length of the
+                # turn, so a session driven by a peer cannot relay back to it.
+                write_inbound_chain(job.chain)
+
                 message = {"type": "user",
                            "message": {"role": "user", "content": job.prompt}}
                 proc.stdin.write(json.dumps(message) + "\n")
@@ -300,6 +313,7 @@ class Session:
                     if item["index"] > start_index:
                         return self._summarize(item["event"], start_index)
             finally:
+                write_inbound_chain(None)
                 with self.state:
                     self.busy = False
 
@@ -476,7 +490,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(prompt, str) or not prompt.strip():
                     raise BridgeError("bad_args", "`prompt` must be a non-empty string")
                 timeout = float(body.get("timeout_seconds") or DEFAULT_TURN_TIMEOUT)
-                job = SESSION.submit(prompt, timeout)
+                chain = body.get("chain") or []
+                if not isinstance(chain, list):
+                    raise BridgeError("bad_args", "`chain` must be a list of names")
+                job = SESSION.submit(prompt, timeout, [str(c) for c in chain])
                 if body.get("async"):
                     self._send(202, job.snapshot())
                     return

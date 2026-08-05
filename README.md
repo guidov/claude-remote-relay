@@ -97,6 +97,65 @@ requests, **context accumulates**: call three knows what calls one and two said.
 | `cli/relay.py` | anywhere | CLI client for shell scripts |
 | `shared/relay_config.py` | your machine | host resolution + HTTP transport |
 
+## Bidirectional: both machines driving each other
+
+The layout above is one-way. Make it symmetric by running **both** components on
+**both** machines — a bridge (so it can be driven) and the MCP server (so it can
+drive). Each machine's `hosts.json` lists the other. Either side can then start
+an exchange.
+
+Set `CLAUDE_RELAY_SELF` on each machine to the name its peers know it by; it
+defaults to the hostname.
+
+### Letting them talk until one needs you
+
+`remote_converse` shuttles messages between two machines with no human in
+between: the opening goes to the first host, its reply to the second, that reply
+back to the first. It stops on the **first** halt condition:
+
+| Stop | Meaning |
+| --- | --- |
+| `needs_user_input` | A session emitted `NEEDS-USER-INPUT` — it wants a decision, credential, or approval from you |
+| `complete` | A session emitted `CONVERSATION-COMPLETE` |
+| `permission_denied` | A tool was refused by the permission mode; that needs a human, not another lap |
+| `turn_error` | A turn errored or was interrupted |
+| `error:<code>` | Transport failure, e.g. the peer went offline |
+| `max_turns` | The cap (default 6) was reached |
+
+Each side is briefed once, on its first message, on how to emit those tokens.
+
+```bash
+relay.py converse bloc greyai --max-turns 6 \
+  --opening "Compare your checkouts of the parser and agree which is ahead."
+```
+
+From a session, just ask: *"have bloc and greyai work out which checkout is
+ahead, and stop when they need me."*
+
+**Every hop is a real turn on a real machine, billed on both.** Keep `max_turns`
+low. The CLI prints running cost, and the tool reports the total.
+
+### Loop protection
+
+Two machines that can each drive the other can bounce a prompt back and forth
+forever. Every request carries the chain of machines that already relayed it:
+
+```
+orchestrator -> alpha -> beta        # beta may not now relay to alpha
+```
+
+A bridge publishes the chain of the turn it is running to a state file
+(`~/.cache/claude-remote-relay/inbound.json`), which that machine's own MCP
+server reads before forwarding — that is how an inbound chain reaches the
+outbound side across two processes. Forwarding to a machine already in the chain
+fails with `relay_loop`; exceeding `CLAUDE_RELAY_MAX_DEPTH` (default 3) fails
+with `max_depth_exceeded`. Markers older than an hour are ignored, so a crashed
+bridge cannot poison later local calls.
+
+`remote_converse` does not rely on this: one orchestrator drives both sides in a
+bounded loop, which is inherently safer than mutual recursion. The chain is the
+backstop for the case where a session calls `remote_prompt` on its own.
+
 ## Install
 
 ### 1. Start a bridge on each remote machine
@@ -170,6 +229,7 @@ tools on its own. Slash commands are faster when you know what you want:
 | --- | --- |
 | `remote_peers` | List configured machines with live health |
 | `remote_prompt` | Send a prompt; `background: true` returns a job id instead of blocking |
+| `remote_converse` | Let two machines talk to each other until one needs you |
 | `remote_result` | Collect a background job by id |
 | `remote_status` | Health of one machine |
 | `remote_transcript` | Raw event stream; watch a long turn |
@@ -188,6 +248,7 @@ relay.py --host greyai send "check disk usage"
 git diff | relay.py send -                        # pipe stdin
 JOB=$(relay.py send -b "full regression run")     # background
 relay.py result "$JOB" --wait 600
+relay.py converse bloc greyai --opening "agree on a plan" --max-turns 4
 relay.py watch --follow                           # tail a running turn
 relay.py interrupt
 relay.py restart --fresh                          # drop context
@@ -239,6 +300,8 @@ restarts it with `--resume <session_id>`, so the conversation outlives a crash.
 | `turn_timeout` | No result within the timeout; the turn may still be running |
 | `no_turn_in_flight` | Interrupt sent with nothing running |
 | `job_not_found` | No job with that id (they age out after 200) |
+| `relay_loop` | Refused to forward to a machine already in the relay chain |
+| `max_depth_exceeded` | Chain hit `CLAUDE_RELAY_MAX_DEPTH` (default 3) |
 | `bad_args` | Missing or wrong-typed argument |
 | `bad_msg` | Malformed JSON body |
 
@@ -295,9 +358,18 @@ Tested end to end against a live bridge:
 - bearer-token rejection, unknown host, unreachable host, unknown job — each
   surfacing its documented code
 - MCP `initialize` / `tools/list` / `tools/call` handshake
+- two bridges conversing: messages alternating between them, each side's reply
+  forwarded verbatim to the other
+- halting on `NEEDS-USER-INPUT` (a session refused a destructive request and
+  escalated) and on `CONVERSATION-COMPLETE`
+- loop protection: relay-back blocked, onward relay allowed, depth limit
+  enforced, stale chain markers expired by TTL
+- a bridge publishing its inbound chain during a turn and clearing it after
 
 Not yet exercised: the Windows-specific paths (the `.cmd` shim wrapper, the
-firewall prompt). The bridge has only been run on Linux so far.
+firewall prompt). The bridge has only been run on Linux so far. The two-machine
+tests ran as two bridges on one host with separate state files — the wire path
+is identical, but they did not cross a real network.
 
 ## Security
 

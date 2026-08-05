@@ -27,12 +27,86 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
+
+# Relay-loop protection. When two machines can each drive the other, a prompt
+# can bounce A -> B -> A forever, burning a full turn's tokens per hop. Every
+# request carries the chain of machines that have already relayed it; a machine
+# refuses to forward to somewhere already in that chain.
+MAX_DEPTH = int(os.environ.get("CLAUDE_RELAY_MAX_DEPTH", "3"))
+CHAIN_TTL = 3600.0  # a stale inbound marker must not poison later local calls
+
+
+def self_name() -> str:
+    """This machine's name, as it appears in a relay chain."""
+    return os.environ.get("CLAUDE_RELAY_SELF") or socket.gethostname()
+
+
+def state_path() -> Path:
+    """Where a bridge records the chain of the turn it is currently running.
+
+    The bridge and the MCP server are separate processes on the same machine,
+    so an inbound chain reaches the outbound side through this file.
+    """
+    explicit = os.environ.get("CLAUDE_RELAY_STATE")
+    if explicit:
+        return Path(explicit)
+    base = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
+    return Path(base) / "claude-remote-relay" / "inbound.json"
+
+
+def read_inbound_chain() -> list[str]:
+    """The chain of the relayed turn this process is running inside, if any.
+
+    Empty when the user is driving locally rather than being driven by a peer.
+    """
+    path = state_path()
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if time.time() - float(data.get("written_at", 0)) > CHAIN_TTL:
+        return []
+    chain = data.get("chain")
+    return [str(c) for c in chain] if isinstance(chain, list) else []
+
+
+def write_inbound_chain(chain: list[str] | None) -> None:
+    """Record (or clear) the chain of the turn a bridge is about to run."""
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if chain:
+        path.write_text(json.dumps({"chain": chain, "written_at": time.time()}),
+                        encoding="utf-8")
+    elif path.exists():
+        path.unlink()
+
+
+def outbound_chain(target: str) -> list[str]:
+    """Chain to attach when forwarding to `target`. Raises if that would loop."""
+    chain = read_inbound_chain() + [self_name()]
+    if target in chain:
+        raise RelayError(
+            "relay_loop",
+            f"refusing to relay to '{target}': it is already in this chain "
+            f"({' -> '.join(chain)}). Something is bouncing a prompt back and forth.",
+        )
+    if len(chain) >= MAX_DEPTH:
+        raise RelayError(
+            "max_depth_exceeded",
+            f"relay chain {' -> '.join(chain)} is at the limit of {MAX_DEPTH} hops "
+            f"(raise CLAUDE_RELAY_MAX_DEPTH if this is intentional).",
+        )
+    return chain
 
 
 class RelayError(Exception):

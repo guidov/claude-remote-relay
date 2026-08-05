@@ -17,7 +17,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
 
-from relay_config import VERSION, RelayError, call, load_hosts  # noqa: E402
+from relay_config import (  # noqa: E402
+    VERSION, RelayError, call, load_hosts, outbound_chain, read_inbound_chain,
+    resolve, self_name,
+)
+from relay_converse import converse  # noqa: E402
 
 PROTOCOL_VERSION = "2024-11-05"
 HTTP_MARGIN = 30.0  # let the bridge's own timeout fire before urllib's
@@ -68,6 +72,41 @@ TOOLS = [
                 },
             },
             "required": ["prompt"],
+        },
+    },
+    {
+        "name": "remote_converse",
+        "description": (
+            "Let two machines talk to each other. The opening message goes to the "
+            "first host, its reply is forwarded to the second, and so on, without a "
+            "human in between. The exchange stops as soon as either side signals it "
+            "needs a human decision, says the conversation is complete, hits a "
+            "permission denial, errors, or reaches max_turns. Returns the full "
+            "transcript. Every hop is a real turn on both machines, so keep "
+            "max_turns modest."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hosts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Exactly two configured host names, in speaking order.",
+                },
+                "opening": {
+                    "type": "string",
+                    "description": "The first message, sent to hosts[0].",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "Hard cap on exchanges (default 6).",
+                },
+                "timeout_seconds": {
+                    "type": "number",
+                    "description": "Per-turn timeout (default 900).",
+                },
+            },
+            "required": ["hosts", "opening"],
         },
     },
     {
@@ -173,7 +212,11 @@ def run_tool(name: str, args: dict) -> str:
 
     if name == "remote_peers":
         hosts, default = load_hosts()
-        lines = []
+        chain = read_inbound_chain()
+        lines = [f"This machine: {self_name()}"]
+        if chain:
+            lines.append(f"Currently running a relayed turn from: {' -> '.join(chain)}")
+        lines.append("")
         for host_name, entry in sorted(hosts.items()):
             marker = " (default)" if host_name == default else ""
             try:
@@ -192,7 +235,9 @@ def run_tool(name: str, args: dict) -> str:
         prompt = require(args, "prompt")
         timeout = float(args.get("timeout_seconds") or 900.0)
         background = bool(args.get("background"))
-        payload = {"prompt": prompt, "timeout_seconds": timeout, "async": background}
+        target, _ = resolve(host)
+        payload = {"prompt": prompt, "timeout_seconds": timeout, "async": background,
+                   "chain": outbound_chain(target)}
         result = call("POST", "/prompt", payload, host=host,
                       timeout=(30.0 if background else timeout + HTTP_MARGIN))
         if background:
@@ -200,6 +245,29 @@ def run_tool(name: str, args: dict) -> str:
                     f"{host or 'the default host'} (status: {result['status']}).\n"
                     f"Collect it with remote_result.")
         return format_turn(result)
+
+    if name == "remote_converse":
+        hosts = args.get("hosts")
+        if not isinstance(hosts, list) or len(hosts) != 2:
+            raise RelayError("bad_args", "`hosts` must be exactly two host names")
+        outcome = converse(
+            [str(h) for h in hosts],
+            require(args, "opening"),
+            max_turns=int(args.get("max_turns") or 6),
+            timeout=float(args.get("timeout_seconds") or 900.0),
+        )
+        lines = [f"Conversation between {' and '.join(outcome['hosts'])} "
+                 f"({outcome['turns']} turns, ${outcome['total_cost_usd']:.4f})",
+                 f"Ended because: {outcome['stopped_because']}", ""]
+        for entry in outcome["transcript"]:
+            if "error" in entry:
+                lines.append(f"--- {entry['turn']}. {entry['host']} FAILED ---")
+                lines.append(entry["error"])
+            else:
+                lines.append(f"--- {entry['turn']}. {entry['host']} ---")
+                lines.append(entry["text"])
+            lines.append("")
+        return "\n".join(lines)
 
     if name == "remote_result":
         job_id = require(args, "job_id")
