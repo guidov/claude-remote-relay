@@ -195,6 +195,22 @@ else sends the prompts:
 relay --host remote stream            # add --thinking for reasoning
 ```
 
+`stream` shows **both sides**: prompts arriving (tagged with the machine that
+sent them) and the replies as they are typed. The child process never echoes
+its own input, so the bridge publishes each prompt itself as a `relay.prompt`
+event — without it a watcher would see only half the conversation.
+
+```
+xxx → run the tests and summarize failures
+  · remote runs Bash
+remote │ Two failures, both in the parser…
+  [remote done: 12.4s, $0.31]
+```
+
+`chat` only renders its own turns — while it sits at the prompt it is blocked on
+your keyboard, not watching. Use `stream` in a second terminal to see traffic
+driven by anyone else.
+
 This is a **human-facing** feature. `remote_converse` over MCP still returns one
 transcript at the end, because a tool result cannot stream into a model's
 context mid-call. Use the CLI when you want to watch.

@@ -118,7 +118,17 @@ class Streamer:
             self._line_open = False
 
     def render_turn_event(self, event: dict) -> None:
-        """Whole-turn events: only the end-of-turn accounting is worth showing."""
+        """Whole-turn events: the incoming prompt, and the end-of-turn accounting."""
+        if event.get("type") == "relay.prompt":
+            self._end_line()
+            chain = event.get("chain") or []
+            who = " -> ".join(chain) if chain else "local"
+            prompt = (event.get("prompt") or "").strip()
+            if len(prompt) > 600:
+                prompt = prompt[:600] + " […]"
+            marker = f"{BOLD}{who} →{RESET}" if self.colour else f"{who} →"
+            self._write(f"\n{marker} {prompt}\n")
+            return
         if event.get("type") != "result":
             return
         self._end_line()

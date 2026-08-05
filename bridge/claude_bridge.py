@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 
 def _load_token() -> str:
@@ -452,6 +452,15 @@ class Session:
                 # Visible to this machine's own MCP server for the length of the
                 # turn, so a session driven by a peer cannot relay back to it.
                 write_inbound_chain(job.chain)
+
+                # The child never echoes its input, so a watcher would see only
+                # replies. Publish the prompt ourselves, with who sent it.
+                self._fanout({"index": None, "event": {
+                    "type": "relay.prompt",
+                    "prompt": job.prompt,
+                    "chain": job.chain,
+                    "job_id": job.id,
+                }})
 
                 message = {"type": "user",
                            "message": {"role": "user", "content": job.prompt}}
