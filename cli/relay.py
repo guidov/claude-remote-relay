@@ -36,7 +36,7 @@ from relay_config import (  # noqa: E402
     resolve, self_name,
 )
 from relay_converse import converse  # noqa: E402
-from relay_stream import watch as watch_stream  # noqa: E402
+from relay_stream import Streamer, watch as watch_stream  # noqa: E402
 
 
 def print_turn(result: dict, as_json: bool) -> int:
@@ -113,6 +113,12 @@ def cmd_send(args: argparse.Namespace) -> int:
     if not prompt.strip():
         sys.exit("empty prompt")
     target, _ = resolve(args.host)
+    if args.stream and not args.background:
+        result = run_turn_streamed(target, prompt, args.timeout)
+        if result is None:
+            return 1
+        turn_footer(result)
+        return 0 if result.get("ok", True) else 1
     payload = {"prompt": prompt, "timeout_seconds": args.timeout,
                "async": args.background, "chain": outbound_chain(target)}
     result = call("POST", "/prompt", payload, host=args.host,
@@ -179,6 +185,62 @@ def cmd_watch(args: argparse.Namespace) -> int:
         time.sleep(args.interval)
 
 
+def run_turn_streamed(host: str, prompt: str, timeout: float) -> dict | None:
+    """One prompt, rendered live. Returns the finished turn, or None if interrupted."""
+    streamer = Streamer(host).start()
+    try:
+        return call("POST", "/prompt",
+                    {"prompt": prompt, "timeout_seconds": timeout,
+                     "chain": outbound_chain(host)},
+                    host=host, timeout=timeout + 30)
+    except KeyboardInterrupt:
+        # Ctrl-C during a turn means "stop that", not "quit the client".
+        streamer.stop()
+        streamer = None
+        print("\n[interrupting…]", file=sys.stderr)
+        try:
+            call("POST", "/interrupt", {}, host=host, timeout=20.0)
+        except RelayError as exc:
+            print(f"  ({exc})", file=sys.stderr)
+        return None
+    finally:
+        if streamer:
+            streamer.stop()
+
+
+def turn_footer(result: dict) -> None:
+    denials = len(result.get("permission_denials") or [])
+    bits = [f"{(result.get('duration_ms') or 0) / 1000:.1f}s",
+            f"${result.get('total_cost_usd') or 0:.4f}"]
+    if denials:
+        bits.append(f"{denials} denied")
+    if not result.get("ok", True):
+        bits.append("turn errored")
+    print(f"  [{' · '.join(bits)}]\n", file=sys.stderr)
+
+
+def cmd_chat(args: argparse.Namespace) -> int:
+    """An interactive prompt against one machine, with its output rendered live."""
+    name, _ = resolve(args.host)
+    print(f"[chat with {name} — Ctrl-D to exit, Ctrl-C to interrupt a turn]",
+          file=sys.stderr)
+    while True:
+        try:
+            prompt = input(f"\n{name}> ")
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            return 0
+        if not prompt.strip():
+            continue
+        try:
+            result = run_turn_streamed(name, prompt, args.timeout)
+        except RelayError as exc:
+            print(f"relay error {exc}", file=sys.stderr)
+            continue
+        if result:
+            turn_footer(result)
+
+
 def cmd_stream(args: argparse.Namespace) -> int:
     name, _ = resolve(args.host)
     print(f"[streaming {name} — Ctrl-C to stop]", file=sys.stderr)
@@ -210,8 +272,14 @@ def main() -> int:
     send.add_argument("--timeout", type=float, default=900.0)
     send.add_argument("--background", "-b", action="store_true",
                       help="return a job id immediately")
+    send.add_argument("--stream", "-s", action="store_true",
+                      help="render the reply live, as it is typed")
     send.add_argument("--json", action="store_true", help="print the full result object")
     send.set_defaults(func=cmd_send)
+
+    chat = sub.add_parser("chat", help="interactive session with one machine, rendered live")
+    chat.add_argument("--timeout", type=float, default=900.0)
+    chat.set_defaults(func=cmd_chat)
 
     result = sub.add_parser("result", help="collect a background job")
     result.add_argument("job_id")

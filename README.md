@@ -162,11 +162,37 @@ local2 │ I'm operating in `/home/guido/relay-workspace2`. It is not a git repo
 A streamer follows whichever machine holds the turn. Tool calls appear as they
 are invoked, so a long silent stretch is visibly *work* rather than a hang.
 
-To watch one machine on its own — useful in a second terminal while something
-else drives it:
+### Talking to one machine, live
+
+`chat` is the interactive loop — type a prompt, watch the reply arrive as it is
+typed, repeat. Ctrl-C interrupts the running turn without leaving; Ctrl-D exits.
 
 ```bash
-relay.py --host remote stream            # add --thinking for reasoning
+relay --host remote chat
+```
+
+```
+[chat with remote — Ctrl-D to exit, Ctrl-C to interrupt a turn]
+
+remote> which listening ports are mine?
+  · remote runs Bash
+remote │ 22 is sshd, 8787 is the relay bridge you're talking over…
+  [15.8s · $0.5280]
+
+remote>
+```
+
+For a single prompt, `send --stream` does the same thing and exits:
+
+```bash
+relay --host remote send --stream "run the tests and summarize failures"
+```
+
+To watch a machine *without* driving it — a second terminal, while something
+else sends the prompts:
+
+```bash
+relay --host remote stream            # add --thinking for reasoning
 ```
 
 This is a **human-facing** feature. `remote_converse` over MCP still returns one

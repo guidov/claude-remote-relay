@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.6.2"
+VERSION = "0.7.0"
 
 
 def _load_token() -> str:
