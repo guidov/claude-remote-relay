@@ -7,7 +7,7 @@ from a JSON config file:
       "default": "bloc",
       "hosts": {
         "bloc": {
-          "url": "http://100.73.225.65:8787",
+          "url": "http://100.100.100.10:8787",
           "token": "…",
           "description": "Windows desktop on the tailnet"
         }

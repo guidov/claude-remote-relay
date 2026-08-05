@@ -68,7 +68,7 @@ idea with `export`):
 
 ```powershell
 $env:CLAUDE_BRIDGE_TOKEN = "<the token>"
-$env:CLAUDE_BRIDGE_HOST  = "100.73.225.65"      # tailnet IP, not 0.0.0.0
+$env:CLAUDE_BRIDGE_HOST  = "100.100.100.10"      # tailnet IP, not 0.0.0.0
 $env:CLAUDE_BRIDGE_NAME  = "bloc"
 $env:CLAUDE_BRIDGE_CWD   = "C:\path\to\the\repo"
 python claude_bridge.py
@@ -89,7 +89,7 @@ Or register the MCP server directly, without the plugin:
 
 ```bash
 claude mcp add remote-relay \
-  -e CLAUDE_RELAY_URL=http://100.73.225.65:8787 \
+  -e CLAUDE_RELAY_URL=http://100.100.100.10:8787 \
   -e CLAUDE_RELAY_TOKEN=<the token> \
   -- python3 /path/to/claude-remote-relay/mcp/claude_relay_mcp.py
 ```
@@ -104,8 +104,8 @@ several, write `~/.config/claude-remote-relay/hosts.json` (see
 {
   "default": "bloc",
   "hosts": {
-    "bloc":   { "url": "http://100.73.225.65:8787",  "token": "…", "description": "Windows desktop" },
-    "greyai": { "url": "http://100.81.127.116:8787", "token": "…", "description": "Linux server" }
+    "bloc":   { "url": "http://100.100.100.10:8787",  "token": "…", "description": "Windows desktop" },
+    "greyai": { "url": "http://100.100.100.20:8787", "token": "…", "description": "Linux server" }
   }
 }
 ```
@@ -135,7 +135,7 @@ tools on its own. Slash commands are faster when you know what you want:
 ### Shell
 
 ```bash
-export CLAUDE_RELAY_URL=http://100.73.225.65:8787
+export CLAUDE_RELAY_URL=http://100.100.100.10:8787
 export CLAUDE_RELAY_TOKEN=<token>
 
 relay.py peers

@@ -3,7 +3,7 @@
 
 For scripting remote sessions without going through MCP.
 
-    export CLAUDE_RELAY_URL=http://100.73.225.65:8787
+    export CLAUDE_RELAY_URL=http://100.100.100.10:8787
     export CLAUDE_RELAY_TOKEN=<token>
     # …or configure several machines in ~/.config/claude-remote-relay/hosts.json
 
