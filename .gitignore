@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Never commit a real hosts file — it holds bridge tokens.
+hosts.json
+*.local.json
+.env

@@ -1,0 +1,15 @@
+{
+    "name": "claude-remote-relay",
+    "owner": {
+        "name": "guidov",
+        "url": "https://github.com/guidov"
+    },
+    "plugins": [
+        {
+            "name": "remote-relay",
+            "source": "./",
+            "description": "Drive Claude Code sessions on other machines over your network",
+            "version": "0.2.0"
+        }
+    ]
+}

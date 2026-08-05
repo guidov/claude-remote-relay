@@ -1,0 +1,19 @@
+{
+    "name": "remote-relay",
+    "version": "0.2.0",
+    "description": "Drive Claude Code sessions on other machines over your network.",
+    "author": {
+        "name": "guidov",
+        "url": "https://github.com/guidov"
+    },
+    "homepage": "https://github.com/guidov/claude-remote-relay",
+    "repository": "https://github.com/guidov/claude-remote-relay",
+    "license": "MIT",
+    "keywords": ["mcp", "claude-code", "remote", "multi-machine", "tailscale"],
+    "mcpServers": {
+        "remote-relay": {
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/claude_relay_mcp.py"]
+        }
+    }
+}

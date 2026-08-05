@@ -1,0 +1,15 @@
+{
+    "default": "bloc",
+    "hosts": {
+        "bloc": {
+            "url": "http://100.73.225.65:8787",
+            "token": "replace-with-the-bridge-token",
+            "description": "Windows desktop on the tailnet"
+        },
+        "greyai": {
+            "url": "http://100.81.127.116:8787",
+            "token": "replace-with-that-machines-token",
+            "description": "Linux server"
+        }
+    }
+}

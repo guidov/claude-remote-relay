@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Command-line client for remote Claude Code bridges.
+
+For scripting remote sessions without going through MCP.
+
+    export CLAUDE_RELAY_URL=http://100.73.225.65:8787
+    export CLAUDE_RELAY_TOKEN=<token>
+    # …or configure several machines in ~/.config/claude-remote-relay/hosts.json
+
+    relay.py peers
+    relay.py send "run the test suite and summarize failures"
+    relay.py send --host bloc --timeout 1800 "refactor the parser"
+    relay.py send --background "full regression run"      # prints a job id
+    relay.py result job-abc123 --wait 120
+    echo "review this diff" | relay.py send -
+    relay.py watch --follow
+    relay.py interrupt
+    relay.py restart --fresh
+
+Exit status is 1 when the remote turn itself reported an error, and 2 on a
+relay-level failure, so shell pipelines can branch.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
+
+from relay_config import RelayError, call, load_hosts  # noqa: E402
+
+
+def print_turn(result: dict, as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(result.get("result") or result.get("assistant_text") or "(no text)")
+        if result.get("tools_used"):
+            print(f"\n[tools: {', '.join(result['tools_used'])}]", file=sys.stderr)
+        cost = result.get("total_cost_usd")
+        if cost is not None:
+            print(f"[{result.get('duration_ms', 0) / 1000:.1f}s | ${cost:.4f} | "
+                  f"cursor {result.get('cursor')}]", file=sys.stderr)
+    return 0 if result.get("ok", True) else 1
+
+
+def cmd_peers(args: argparse.Namespace) -> int:
+    hosts, default = load_hosts()
+    for name, entry in sorted(hosts.items()):
+        marker = " (default)" if name == default else ""
+        try:
+            health = call("GET", "/health", host=name, timeout=15.0)
+            state = "busy" if health.get("busy") else "idle"
+            status = (f"{state:<4} {health.get('platform', '?'):<8} "
+                      f"cwd={health.get('cwd', '?')}")
+        except RelayError as exc:
+            status = f"unreachable ({exc.code})"
+        print(f"{name}{marker}\n    {entry['url']}\n    {status}")
+        if entry.get("description"):
+            print(f"    {entry['description']}")
+    return 0
+
+
+def cmd_send(args: argparse.Namespace) -> int:
+    prompt = sys.stdin.read() if args.prompt == "-" else args.prompt
+    if not prompt.strip():
+        sys.exit("empty prompt")
+    payload = {"prompt": prompt, "timeout_seconds": args.timeout,
+               "async": args.background}
+    result = call("POST", "/prompt", payload, host=args.host,
+                  timeout=(30.0 if args.background else args.timeout + 30))
+    if args.background:
+        print(result["job_id"])
+        print(f"[queued on {args.host or 'default'}; collect with: "
+              f"relay.py result {result['job_id']}]", file=sys.stderr)
+        return 0
+    return print_turn(result, args.json)
+
+
+def cmd_result(args: argparse.Namespace) -> int:
+    result = call("GET", "/job", host=args.host, timeout=args.wait + 30,
+                  params={"id": args.job_id, "wait": args.wait})
+    status = result.get("status")
+    if status in ("queued", "running"):
+        print(f"{args.job_id} is {status} ({result.get('elapsed_s')}s elapsed)",
+              file=sys.stderr)
+        return 3
+    if result.get("error"):
+        error = result["error"]
+        print(f"job failed: [{error.get('code')}] {error.get('message')}", file=sys.stderr)
+        return 1
+    return print_turn(result.get("result") or {}, args.json)
+
+
+def cmd_jobs(args: argparse.Namespace) -> int:
+    data = call("GET", "/jobs", host=args.host, timeout=20.0,
+                params={"limit": args.limit})
+    for job in data["jobs"]:
+        print(f"{job['job_id']}  {job['status']:<8} {job['elapsed_s']:>7.1f}s  "
+              f"{job['prompt'][:60]}")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    print(json.dumps(call("GET", "/health", host=args.host, timeout=20.0), indent=2))
+    return 0
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Tail a remote session's events, so a long turn is visible as it runs."""
+    since = args.since
+    while True:
+        data = call("GET", "/transcript", host=args.host, timeout=30.0,
+                    params={"since": since, "limit": 200})
+        for entry in data["events"]:
+            event = entry["event"]
+            kind = event.get("type")
+            if kind == "assistant":
+                for block in event.get("message", {}).get("content", []):
+                    if block.get("type") == "text" and block.get("text", "").strip():
+                        print(block["text"])
+                    elif block.get("type") == "tool_use":
+                        print(f"  · {block.get('name')}", file=sys.stderr)
+            elif kind == "result":
+                state = "error" if event.get("is_error") else "done"
+                print(f"[turn {state} | ${event.get('total_cost_usd', 0):.4f}]",
+                      file=sys.stderr)
+        since = data["cursor"]
+        if not args.follow:
+            return 0
+        time.sleep(args.interval)
+
+
+def cmd_interrupt(args: argparse.Namespace) -> int:
+    print(json.dumps(call("POST", "/interrupt", {}, host=args.host, timeout=20.0)))
+    return 0
+
+
+def cmd_restart(args: argparse.Namespace) -> int:
+    print(json.dumps(call("POST", "/restart", {"resume": not args.fresh},
+                          host=args.host, timeout=60.0), indent=2))
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", help="configured host name (default: the config's default)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    peers = sub.add_parser("peers", help="list configured machines and their health")
+    peers.set_defaults(func=cmd_peers)
+
+    send = sub.add_parser("send", help="send a prompt and print the reply")
+    send.add_argument("prompt", help="prompt text, or - to read stdin")
+    send.add_argument("--timeout", type=float, default=900.0)
+    send.add_argument("--background", "-b", action="store_true",
+                      help="return a job id immediately")
+    send.add_argument("--json", action="store_true", help="print the full result object")
+    send.set_defaults(func=cmd_send)
+
+    result = sub.add_parser("result", help="collect a background job")
+    result.add_argument("job_id")
+    result.add_argument("--wait", type=float, default=0.0,
+                        help="block up to N seconds for completion")
+    result.add_argument("--json", action="store_true")
+    result.set_defaults(func=cmd_result)
+
+    jobs = sub.add_parser("jobs", help="list recent jobs")
+    jobs.add_argument("--limit", type=int, default=20)
+    jobs.set_defaults(func=cmd_jobs)
+
+    status = sub.add_parser("status", help="show remote session health")
+    status.set_defaults(func=cmd_status)
+
+    watch = sub.add_parser("watch", help="print remote events")
+    watch.add_argument("--since", type=int, default=0)
+    watch.add_argument("--follow", "-f", action="store_true")
+    watch.add_argument("--interval", type=float, default=2.0)
+    watch.set_defaults(func=cmd_watch)
+
+    interrupt = sub.add_parser("interrupt", help="stop the running turn")
+    interrupt.set_defaults(func=cmd_interrupt)
+
+    restart = sub.add_parser("restart", help="restart the remote process")
+    restart.add_argument("--fresh", action="store_true", help="discard conversation context")
+    restart.set_defaults(func=cmd_restart)
+
+    args = parser.parse_args()
+    try:
+        return args.func(args)
+    except RelayError as exc:
+        print(f"relay error {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
