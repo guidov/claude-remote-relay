@@ -312,10 +312,13 @@ Three things that bite if you skip them:
   amnesiac restart, arriving by another road. `[TimeSpan]::Zero` is unlimited.
 - **`MultipleInstances IgnoreNew`** stops a second instance fighting for 8787 if
   the trigger fires while one is already up.
-- **`claude` must be on the *persisted* PATH**, not just your shell's. Check with
-  `[Environment]::GetEnvironmentVariable("PATH","User")` before registering. If
-  it is only on a session PATH the task starts cleanly and then fails to spawn a
-  child — which reads like a bridge bug and is not one.
+- **`claude` must be findable from the service's PATH**, not just your shell's.
+  Check with `[Environment]::GetEnvironmentVariable("PATH","User")` before
+  registering. The bridge falls back to the usual install locations and you can
+  name it outright with **`CLAUDE_BRIDGE_CLAUDE_BIN`**, which is the reliable
+  answer for any service. This is not Windows-specific: a non-interactive Linux
+  shell gets a PATH without `~/.local/bin`, so `shutil.which("claude")` returns
+  `None` on a machine where `claude` is plainly installed.
 
 Verify the environment actually reached the task by reading `permission_mode`
 back from `/health`: it can only be right if inheritance worked.

@@ -23,6 +23,7 @@ Environment:
     CLAUDE_BRIDGE_MODEL    --model value (default: the CLI's own default)
     CLAUDE_BRIDGE_PERMISSION_MODE   --permission-mode (default acceptEdits)
     CLAUDE_BRIDGE_ARGS     extra args for the child, shell-quoted
+    CLAUDE_BRIDGE_CLAUDE_BIN  full path to `claude` (for a service PATH that omits it)
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 
 def _load_token() -> str:
@@ -138,10 +139,39 @@ def log(msg: str) -> None:
     print(f"[bridge {time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
 
 
+def claude_executable() -> str:
+    """Locate `claude`, tolerating the stripped PATH a service process gets.
+
+    Services and non-interactive shells do not source a login profile, so the
+    per-user install directory is usually missing from PATH even though the
+    binary is right there. Failing here looks like a bridge bug: the process
+    starts, then cannot spawn a child.
+    """
+    explicit = os.environ.get("CLAUDE_BRIDGE_CLAUDE_BIN")
+    if explicit:
+        if not Path(explicit).is_file():
+            raise SystemExit(f"CLAUDE_BRIDGE_CLAUDE_BIN points at nothing: {explicit}")
+        return explicit
+    found = shutil.which("claude")
+    if found:
+        return found
+    home = Path.home()
+    fallbacks = [home / ".local/bin/claude", Path("/usr/local/bin/claude"),
+                 home / ".local/bin/claude.exe",
+                 home / "AppData/Local/Programs/claude/claude.exe"]
+    for candidate in fallbacks:
+        if candidate.is_file():
+            log(f"claude not on PATH; using {candidate}")
+            return str(candidate)
+    raise SystemExit(
+        "`claude` not found on PATH and not in the usual install locations. "
+        "Set CLAUDE_BRIDGE_CLAUDE_BIN to its full path — a service PATH often "
+        "omits per-user directories such as ~/.local/bin."
+    )
+
+
 def child_argv() -> list[str]:
-    exe = shutil.which("claude")
-    if not exe:
-        raise SystemExit("`claude` not found on PATH")
+    exe = claude_executable()
     argv = [
         exe,
         "-p",
