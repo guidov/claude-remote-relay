@@ -1,0 +1,24 @@
+[Unit]
+Description=Claude Code relay bridge (local)
+Documentation=https://github.com/guidov/claude-remote-relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CLAUDE_BRIDGE_TOKEN_FILE=%h/.claude-relay-token
+Environment=CLAUDE_BRIDGE_HOST=100.100.100.20
+Environment=CLAUDE_BRIDGE_PORT=8787
+Environment=CLAUDE_BRIDGE_NAME=local
+Environment=CLAUDE_BRIDGE_CWD=%h/relay-workspace
+Environment=CLAUDE_BRIDGE_CLAUDE_BIN=%h/.local/bin/claude
+Environment=CLAUDE_BRIDGE_PERMISSION_MODE=plan
+Environment=CLAUDE_BRIDGE_LOG=%h/relay-workspace/bridge.log
+ExecStart=/usr/bin/python3 %h/claude-remote-relay/bridge/claude_bridge.py
+# always, not on-failure: a clean exit still leaves the peer unreachable.
+# An explicit `systemctl stop` is still honoured.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

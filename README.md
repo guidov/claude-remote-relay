@@ -372,30 +372,32 @@ not grow without bound on a machine nobody is watching.
 
 ### Linux (systemd user unit)
 
-```ini
-# ~/.config/systemd/user/claude-relay-bridge.service
-[Unit]
-Description=Claude Code relay bridge
-After=network-online.target
-
-[Service]
-Environment=CLAUDE_BRIDGE_TOKEN=<the token>
-Environment=CLAUDE_BRIDGE_HOST=100.100.100.20
-Environment=CLAUDE_BRIDGE_NAME=local
-Environment=CLAUDE_BRIDGE_CWD=%h/relay-workspace
-ExecStart=/usr/bin/python3 %h/claude-remote-relay/bridge/claude_bridge.py
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
+A tested unit ships at [`contrib/claude-relay-bridge.service`](contrib/claude-relay-bridge.service).
+Copy it, edit the `Environment=` lines, and:
 
 ```bash
-chmod 600 ~/.config/systemd/user/claude-relay-bridge.service   # holds the token
+cp contrib/claude-relay-bridge.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now claude-relay-bridge
 loginctl enable-linger "$USER"    # survive logout; without this it stops
 ```
+
+Three choices in that file worth knowing:
+
+- **`Restart=always`, not `on-failure`.** A clean exit still leaves the peer
+  unreachable, and there is no such thing as a bridge that is meant to stop on
+  its own. An explicit `systemctl stop` is still honoured.
+- **`CLAUDE_BRIDGE_CLAUDE_BIN`** is set outright. A systemd user unit gets a
+  minimal PATH with no `~/.local/bin`, which is exactly where `claude` usually
+  lives.
+- **`CLAUDE_BRIDGE_LOG`** is set, because `systemctl --user` capture is not
+  where you will look first and an always-on bridge needs its own forensics.
+
+Binding to a tailnet address before Tailscale is up just fails and retries every
+`RestartSec`, so no extra ordering is needed.
+
+Over SSH, `systemctl --user` needs `export XDG_RUNTIME_DIR=/run/user/$(id -u)`
+in a non-interactive shell.
 
 ### The conversation survives a restart
 
@@ -415,6 +417,10 @@ Two guards, because both failure modes are silent otherwise:
 
 `restart --fresh` clears the saved id too, so a deliberate reset is not undone
 by the next reboot.
+
+`/health` reports `session_id: null` between a restart and the first prompt —
+the child does not emit its init event until it has input. That is not a lost
+conversation; send a turn and the id reappears.
 
 ## Usage
 
