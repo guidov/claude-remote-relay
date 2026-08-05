@@ -51,9 +51,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "shared"))
 
-from relay_config import write_inbound_chain  # noqa: E402
+from relay_config import self_name, write_inbound_chain  # noqa: E402
 
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 
 
 def _load_token() -> str:
@@ -569,6 +569,10 @@ class Session:
             return {
                 "ok": proc is not None and proc.poll() is None,
                 "name": NAME,
+                # The identity this machine writes into a relay chain. The loop
+                # guard only holds if a peer's alias for us equals this, so
+                # publish it and let clients check rather than assume.
+                "self_name": self_name(),
                 "version": VERSION,
                 "platform": platform.system(),
                 # Two different processes; naming only one of them "pid" invites

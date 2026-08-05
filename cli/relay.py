@@ -92,6 +92,7 @@ def cmd_peers(args: argparse.Namespace) -> int:
         print(f"running a relayed turn from: {' -> '.join(chain)}")
     print()
     names = sorted(hosts)
+    warnings: list[tuple[str, str]] = []
     results = peer_health(names)
     for name in names:
         entry, health = hosts[name], results[name]
@@ -105,6 +106,19 @@ def cmd_peers(args: argparse.Namespace) -> int:
         print(f"{name}{marker}\n    {entry['url']}\n    {status}")
         if entry.get("description"):
             print(f"    {entry['description']}")
+        # The loop guard matches a chain entry (a peer's self_name) against the
+        # alias we forward to. If they disagree, a bounced prompt is not caught
+        # as a loop — it runs an extra hop and dies as max_depth_exceeded, which
+        # names the wrong problem.
+        if not isinstance(health, RelayError):
+            theirs = health.get("self_name")
+            if theirs and theirs != name:
+                warnings.append((name, theirs))
+    for alias, theirs in warnings:
+        print(f"\nwarning: alias '{alias}' but that machine calls itself "
+              f"'{theirs}'.\n  Loop protection compares the two, so set "
+              f"CLAUDE_RELAY_SELF={alias} there (or rename the alias to "
+              f"'{theirs}').", file=sys.stderr)
     return 0
 
 

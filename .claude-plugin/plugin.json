@@ -1,6 +1,6 @@
 {
     "name": "remote-relay",
-    "version": "0.8.1",
+    "version": "0.9.0",
     "description": "Drive Claude Code sessions on other machines over your network.",
     "author": {
         "name": "guidov",
