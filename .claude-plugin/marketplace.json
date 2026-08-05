@@ -9,7 +9,7 @@
             "name": "remote-relay",
             "source": "./",
             "description": "Drive Claude Code sessions on other machines over your network",
-            "version": "0.6.1"
+            "version": "0.6.2"
         }
     ]
 }

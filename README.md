@@ -452,6 +452,13 @@ tools on its own. Slash commands are faster when you know what you want:
 
 ### Shell
 
+Put it on your PATH once — the entry points resolve their imports through
+`realpath`, so a symlink works from anywhere:
+
+```bash
+ln -s /path/to/claude-remote-relay/cli/relay.py ~/.local/bin/relay
+```
+
 ```bash
 export CLAUDE_RELAY_URL=http://100.100.100.10:8787
 export CLAUDE_RELAY_TOKEN=<token>

@@ -29,7 +29,7 @@ import os
 import sys
 import time
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "shared"))
 
 from relay_config import (  # noqa: E402
     RelayError, call, load_hosts, outbound_chain, peer_health, read_inbound_chain,

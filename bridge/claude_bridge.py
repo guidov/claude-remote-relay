@@ -47,11 +47,11 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "shared"))
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.6.1"
+VERSION = "0.6.2"
 
 
 def _load_token() -> str:
