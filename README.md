@@ -412,6 +412,19 @@ wrapper needed:
 It rotates to `.1` at `CLAUDE_BRIDGE_LOG_MAX_BYTES` (default 5 MB), so it will
 not grow without bound on a machine nobody is watching.
 
+An unhandled exception is written there too, with its traceback — a bridge that
+dies at boot under a service manager otherwise leaves nothing to debug.
+
+#### Starting before the network is ready
+
+A service can start before its tailnet address exists, and the bind then fails
+with `EADDRNOTAVAIL` (POSIX) or `WinError 10049` — the process dies seconds
+after boot having never served. The bridge retries the bind for
+`CLAUDE_BRIDGE_BIND_RETRY_S` (default 180) instead of exiting.
+
+The bind also happens **before** the `claude` child is spawned, so a bind that
+does fail cannot leave an orphaned child behind with nothing to serve it.
+
 ### Linux (systemd user unit)
 
 A tested unit ships at [`contrib/claude-relay-bridge.service`](contrib/claude-relay-bridge.service).

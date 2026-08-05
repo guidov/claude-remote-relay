@@ -26,6 +26,7 @@ Environment:
     CLAUDE_BRIDGE_CLAUDE_BIN  full path to `claude` (for a service PATH that omits it)
     CLAUDE_BRIDGE_LOG      write a dated log here (a service discards stdout)
     CLAUDE_BRIDGE_LOG_MAX_BYTES  rotate to .1 past this size (default 5MB)
+    CLAUDE_BRIDGE_BIND_RETRY_S  keep retrying the bind this long (default 180)
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,7 +53,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 
 
 def _load_token() -> str:
@@ -76,6 +78,8 @@ MODEL = os.environ.get("CLAUDE_BRIDGE_MODEL", "")
 PERMISSION_MODE = os.environ.get("CLAUDE_BRIDGE_PERMISSION_MODE", "acceptEdits")
 EXTRA_ARGS = shlex.split(os.environ.get("CLAUDE_BRIDGE_ARGS", ""))
 STREAM = os.environ.get("CLAUDE_BRIDGE_STREAM", "1") not in ("0", "false", "no")
+# Boot races: the tailnet address may not exist yet when a service starts.
+BIND_RETRY_SECONDS = float(os.environ.get("CLAUDE_BRIDGE_BIND_RETRY_S", "180"))
 # A service manager usually discards stdout, and for an always-on bridge the log
 # is the only forensics there is. Writing it ourselves avoids needing a shell
 # wrapper just to redirect.
@@ -754,18 +758,44 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(exc)
 
 
+def bind_server() -> ThreadingHTTPServer:
+    """Bind, tolerating an address that does not exist yet.
+
+    At boot the tailnet interface can come up after this process does, so the
+    bind fails with EADDRNOTAVAIL / WinError 10049 and the service dies before
+    it ever serves. Retry instead — the address usually appears seconds later.
+    """
+    deadline = time.time() + BIND_RETRY_SECONDS
+    attempt = 0
+    while True:
+        try:
+            return ThreadingHTTPServer((HOST, PORT), Handler)
+        except OSError as exc:
+            if time.time() >= deadline:
+                log(f"giving up binding {HOST}:{PORT} after "
+                    f"{BIND_RETRY_SECONDS:.0f}s: {exc}")
+                raise
+            attempt += 1
+            if attempt == 1:
+                log(f"cannot bind {HOST}:{PORT} yet ({exc}); "
+                    f"retrying for up to {BIND_RETRY_SECONDS:.0f}s")
+            time.sleep(min(2.0 * attempt, 10.0))
+
+
 def main() -> None:
     global SESSION
     if not TOKEN:
         raise SystemExit("CLAUDE_BRIDGE_TOKEN must be set to a long random string")
     if len(TOKEN) < 24:
         raise SystemExit("CLAUDE_BRIDGE_TOKEN is too short; use at least 24 characters")
-    SESSION = Session()
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    log(f"claude-remote-relay bridge {VERSION} ({NAME}) on http://{HOST}:{PORT}")
-    log(f"child cwd: {CHILD_CWD}")
+    log(f"claude-remote-relay bridge {VERSION} ({NAME}) starting; cwd {CHILD_CWD}")
+    # Bind before spawning the child: a bind failure here would otherwise leave
+    # an orphaned `claude` process behind with nothing to serve it.
+    server = bind_server()
     if HOST in ("0.0.0.0", "::"):
         log("WARNING: bound to all interfaces; prefer the tailnet IP or 127.0.0.1")
+    SESSION = Session()
+    log(f"serving on http://{HOST}:{PORT}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -775,4 +805,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise  # deliberate exit with its own message
+    except BaseException:
+        # A service manager discards stderr, so an unhandled exception at boot
+        # leaves nothing to debug. Put the traceback where the log is.
+        log("FATAL: bridge exited on an unhandled exception\n"
+            + traceback.format_exc())
+        raise
