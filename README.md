@@ -244,6 +244,32 @@ bridge cannot poison later local calls.
 bounded loop, which is inherently safer than mutual recursion. The chain is the
 backstop for the case where a session calls `remote_prompt` on its own.
 
+#### The invariant the guard depends on
+
+A chain entry is a machine's **`self_name()`** (`CLAUDE_RELAY_SELF`, defaulting
+to the hostname). The loop check compares that against the **alias** you are
+forwarding to. So the guard only holds when *every machine's `self_name()`
+equals the alias its peers use for it*.
+
+Drift degrades it asymmetrically and quietly. If `bloc` calls itself `remote`
+while its peers alias it `bloc`, then `xxx -> bloc -> xxx` is caught but
+`bloc -> xxx -> bloc` is not: at `xxx` the inbound chain says `remote` and the
+target says `bloc`, so the rule misses. It stays bounded — `max_depth_exceeded`
+trips on the next hop — but you burn an extra turn and get an error naming the
+wrong problem.
+
+`/health` publishes `self_name` so this is checkable, and **`relay peers` warns**
+when an alias disagrees with the machine's own name:
+
+```
+warning: alias 'xxx' but that machine calls itself 'remote'.
+  Loop protection compares the two, so set CLAUDE_RELAY_SELF=xxx there.
+```
+
+A fleet-wide rename must therefore touch `CLAUDE_RELAY_SELF` on every box, not
+just `hosts.json`. Note `CLAUDE_BRIDGE_NAME` is a *different* variable — it only
+labels `/health` and has no bearing on the guard.
+
 ## Install
 
 ### 1. Start a bridge on each remote machine
@@ -660,6 +686,11 @@ Tested end to end against a live bridge:
 Run in anger on Windows 11 (`claude.exe`, PowerShell tooling) driven from Linux
 over Tailscale. Still unexercised: the `.cmd` shim wrapper in `child_argv`, since
 that install used `claude.exe` directly.
+
+**Orphaned children differ by platform.** On Linux a SIGKILLed bridge's child
+exits within a second — stdin EOF does its job (measured). On Windows a child
+has been observed outliving its parent, so a restarted bridge there can briefly
+race an old child for the same session.
 
 `/health` names the bridge and its child separately — **`bridge_pid`** /
 **`child_pid`**, **`bridge_uptime_s`** / **`child_uptime_s`**. They are two
