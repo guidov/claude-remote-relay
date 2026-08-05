@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 # Relay-loop protection. When two machines can each drive the other, a prompt
 # can bounce A -> B -> A forever, burning a full turn's tokens per hop. Every
@@ -112,12 +112,19 @@ def peer_health(hosts: list[str], timeout: float = 5.0) -> dict[str, dict | Rela
 
 
 def outbound_chain(target: str) -> list[str]:
-    """Chain to attach when forwarding to `target`. Raises if that would loop."""
-    chain = read_inbound_chain() + [self_name()]
-    if target in chain:
+    """Chain to attach when forwarding to `target`. Raises if that would loop.
+
+    Only the *inbound* chain can prove a loop: it names machines that already
+    relayed this request. Testing against our own name too would reject a
+    legitimate depth-0 call to our own bridge, which is a separate session
+    rather than a bounce.
+    """
+    inbound = read_inbound_chain()
+    chain = inbound + [self_name()]
+    if target in inbound:
         raise RelayError(
             "relay_loop",
-            f"refusing to relay to '{target}': it is already in this chain "
+            f"refusing to relay to '{target}': it already relayed this request "
             f"({' -> '.join(chain)}). Something is bouncing a prompt back and forth.",
         )
     if len(chain) >= MAX_DEPTH:

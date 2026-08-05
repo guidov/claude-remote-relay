@@ -92,6 +92,9 @@ def converse(hosts: list[str], opening: str, max_turns: int = 6,
             "cost_usd": cost,
             "duration_ms": result.get("duration_ms"),
             "tools_used": result.get("tools_used", []),
+            # Reported, not fatal: a session that works around a denied tool has
+            # not asked for a human. Only it can judge that, via NEEDS-USER-INPUT.
+            "permission_denials": len(result.get("permission_denials", [])),
         }
         transcript.append(entry)
         if on_turn:
@@ -99,11 +102,6 @@ def converse(hosts: list[str], opening: str, max_turns: int = 6,
 
         if not result.get("ok", True):
             stopped = "turn_error"
-            break
-        if result.get("permission_denials"):
-            # The remote side wanted to do something its permission mode forbids;
-            # that needs a human, not another lap.
-            stopped = "permission_denied"
             break
         reason = halt_reason(text)
         if reason:

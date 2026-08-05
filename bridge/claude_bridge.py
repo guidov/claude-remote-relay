@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 HOST = os.environ.get("CLAUDE_BRIDGE_HOST", "127.0.0.1")

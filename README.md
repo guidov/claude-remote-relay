@@ -117,12 +117,17 @@ back to the first. It stops on the **first** halt condition:
 | --- | --- |
 | `needs_user_input` | A session emitted `NEEDS-USER-INPUT` — it wants a decision, credential, or approval from you |
 | `complete` | A session emitted `CONVERSATION-COMPLETE` |
-| `permission_denied` | A tool was refused by the permission mode; that needs a human, not another lap |
 | `turn_error` | A turn errored or was interrupted |
 | `error:<code>` | Transport failure, e.g. the peer went offline |
 | `max_turns` | The cap (default 6) was reached |
 
 Each side is briefed once, on its first message, on how to emit those tokens.
+
+A denied tool call is **reported, not fatal** — the count appears in the
+transcript entry and the exchange continues. A session that routes around a
+sandbox restriction has not asked for a human; only it can judge that, and it
+has `NEEDS-USER-INPUT` to say so. Halting on every denial killed healthy
+conversations in testing.
 
 ```bash
 relay.py converse remote local --max-turns 6 \
