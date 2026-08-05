@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
 HOST = os.environ.get("CLAUDE_BRIDGE_HOST", "127.0.0.1")
@@ -424,7 +424,10 @@ class Session:
                 "name": NAME,
                 "version": VERSION,
                 "platform": platform.system(),
-                "pid": proc.pid if proc else None,
+                # Two different processes; naming only one of them "pid" invites
+                # matching the wrong one against Get-Process / ps.
+                "bridge_pid": os.getpid(),
+                "child_pid": proc.pid if proc else None,
                 "exit_code": proc.poll() if proc else None,
                 "session_id": self.session_id,
                 "busy": self.busy,
@@ -446,6 +449,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         log(f"{self.address_string()} {fmt % args}")
+
+    def handle_one_request(self) -> None:
+        """Serve a request, treating a dropped socket as normal.
+
+        Clients that abandon a keep-alive connection after a completed response
+        (PowerShell's Invoke-RestMethod does this on every call) would otherwise
+        print a traceback per probe, which reads like a fault and is not one.
+        """
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
 
     # ---- helpers ---------------------------------------------------------
 

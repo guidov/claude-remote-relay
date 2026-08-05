@@ -427,11 +427,16 @@ Tested end to end against a live bridge:
 - a bridge publishing its inbound chain during a turn and clearing it after
 - SSE streaming: token deltas and tool markers arriving live, and a full
   `converse --stream` exchange rendered as it was typed
+- streaming **across a real tailnet**, Windows <-> Linux: a 40s idle SSE
+  connection held with 15s keepalives, then a live two-machine exchange
 
-Not yet exercised: the Windows-specific paths (the `.cmd` shim wrapper, the
-firewall prompt). The bridge has only been run on Linux so far. The two-machine
-tests ran as two bridges on one host with separate state files — the wire path
-is identical, but they did not cross a real network.
+Run in anger on Windows 11 (`claude.exe`, PowerShell tooling) driven from Linux
+over Tailscale. Still unexercised: the `.cmd` shim wrapper in `child_argv`, since
+that install used `claude.exe` directly.
+
+`/health` reports **`bridge_pid`** and **`child_pid`** separately — they are two
+processes, and a single `pid` field invites matching the wrong one against
+`ps` / `Get-Process`.
 
 ## Security
 
