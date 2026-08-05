@@ -18,8 +18,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
 
 from relay_config import (  # noqa: E402
-    VERSION, RelayError, call, load_hosts, outbound_chain, read_inbound_chain,
-    resolve, self_name,
+    VERSION, RelayError, call, load_hosts, outbound_chain, peer_health,
+    read_inbound_chain, resolve, self_name,
 )
 from relay_converse import converse  # noqa: E402
 
@@ -217,15 +217,17 @@ def run_tool(name: str, args: dict) -> str:
         if chain:
             lines.append(f"Currently running a relayed turn from: {' -> '.join(chain)}")
         lines.append("")
-        for host_name, entry in sorted(hosts.items()):
+        names = sorted(hosts)
+        results = peer_health(names)
+        for host_name in names:
+            entry, health = hosts[host_name], results[host_name]
             marker = " (default)" if host_name == default else ""
-            try:
-                health = call("GET", "/health", host=host_name, timeout=15.0)
+            if isinstance(health, RelayError):
+                detail = f"unreachable ({health.code})"
+            else:
                 state = "busy" if health.get("busy") else "idle"
                 detail = (f"{state} · {health.get('platform', '?')} · "
                           f"cwd {health.get('cwd', '?')} · model {health.get('model', '?')}")
-            except RelayError as exc:
-                detail = f"unreachable ({exc.code})"
             description = entry.get("description")
             lines.append(f"- {host_name}{marker}: {detail}"
                          + (f"\n    {description}" if description else ""))

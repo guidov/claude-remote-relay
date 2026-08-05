@@ -3,7 +3,7 @@
 Drive Claude Code sessions on **other machines** from the one you're sitting at.
 
 Working on a Linux laptop but the Windows desktop has the GPU, the build
-toolchain, or the repo you need? Say *"ask bloc to run the test suite and
+toolchain, or the repo you need? Say *"ask `remote` to run the test suite and
 summarize the failures"* and it happens over there, in a session that remembers
 what you asked it last time.
 
@@ -125,11 +125,11 @@ back to the first. It stops on the **first** halt condition:
 Each side is briefed once, on its first message, on how to emit those tokens.
 
 ```bash
-relay.py converse bloc greyai --max-turns 6 \
+relay.py converse remote local --max-turns 6 \
   --opening "Compare your checkouts of the parser and agree which is ahead."
 ```
 
-From a session, just ask: *"have bloc and greyai work out which checkout is
+From a session, just ask: *"have `remote` and `local` work out which checkout is
 ahead, and stop when they need me."*
 
 **Every hop is a real turn on a real machine, billed on both.** Keep `max_turns`
@@ -172,7 +172,7 @@ idea with `export`):
 ```powershell
 $env:CLAUDE_BRIDGE_TOKEN = "<the token>"
 $env:CLAUDE_BRIDGE_HOST  = "100.100.100.10"      # tailnet IP, not 0.0.0.0
-$env:CLAUDE_BRIDGE_NAME  = "bloc"
+$env:CLAUDE_BRIDGE_NAME  = "remote"
 $env:CLAUDE_BRIDGE_CWD   = "C:\path\to\the\repo"
 python claude_bridge.py
 ```
@@ -205,13 +205,18 @@ several, write `~/.config/claude-remote-relay/hosts.json` (see
 
 ```json
 {
-  "default": "bloc",
+  "default": "remote",
   "hosts": {
-    "bloc":   { "url": "http://100.100.100.10:8787",  "token": "…", "description": "Windows desktop" },
-    "greyai": { "url": "http://100.100.100.20:8787", "token": "…", "description": "Linux server" }
+    "remote": { "url": "http://100.100.100.10:8787", "token": "…", "description": "the machine with the GPU and the build toolchain" },
+    "local":  { "url": "http://100.100.100.20:8787", "token": "…", "description": "the laptop you sit at" }
   }
 }
 ```
+
+Host names are yours to choose. The examples throughout use `remote` and
+`local`; in code spans those are **host names**, while plain "remote" and
+"local" in prose mean the ordinary words. Hostnames of your own (`workshop`,
+`gpu-box`) avoid the ambiguity entirely.
 
 Config is searched at `$CLAUDE_RELAY_CONFIG`, then
 `$CLAUDE_PLUGIN_DATA/hosts.json`, then `~/.config/claude-remote-relay/hosts.json`.
@@ -219,9 +224,9 @@ Config is searched at `$CLAUDE_RELAY_CONFIG`, then
 
 ## Usage
 
-Just talk: *"ask bloc what's failing in the test suite"*. Claude routes to the
+Just talk: *"ask `remote` what's failing in the test suite"*. Claude routes to the
 tools on its own. Slash commands are faster when you know what you want:
-`/relay-peers`, `/relay-send bloc <prompt>`, `/relay-interrupt`.
+`/relay-peers`, `/relay-send remote <prompt>`, `/relay-interrupt`.
 
 ### Tools
 
@@ -244,11 +249,11 @@ export CLAUDE_RELAY_TOKEN=<token>
 
 relay.py peers
 relay.py send "run the test suite and summarize failures"
-relay.py --host greyai send "check disk usage"
+relay.py --host local send "check disk usage"
 git diff | relay.py send -                        # pipe stdin
 JOB=$(relay.py send -b "full regression run")     # background
 relay.py result "$JOB" --wait 600
-relay.py converse bloc greyai --opening "agree on a plan" --max-turns 4
+relay.py converse remote local --opening "agree on a plan" --max-turns 4
 relay.py watch --follow                           # tail a running turn
 relay.py interrupt
 relay.py restart --fresh                          # drop context

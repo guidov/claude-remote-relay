@@ -4,12 +4,12 @@ A "host" is one remote machine running `bridge/claude_bridge.py`. Hosts come
 from a JSON config file:
 
     {
-      "default": "bloc",
+      "default": "remote",
       "hosts": {
-        "bloc": {
+        "remote": {
           "url": "http://100.100.100.10:8787",
           "token": "…",
-          "description": "Windows desktop on the tailnet"
+          "description": "the machine with the GPU and the build toolchain"
         }
       }
     }
@@ -89,6 +89,26 @@ def write_inbound_chain(chain: list[str] | None) -> None:
                         encoding="utf-8")
     elif path.exists():
         path.unlink()
+
+
+def peer_health(hosts: list[str], timeout: float = 5.0) -> dict[str, dict | RelayError]:
+    """Health for several hosts at once.
+
+    Checked in parallel and with a short timeout: a listing that waits serially
+    on every offline machine is unusable as soon as one is asleep.
+    """
+    import concurrent.futures
+
+    def probe(name: str) -> dict | RelayError:
+        try:
+            return call("GET", "/health", host=name, timeout=timeout)
+        except RelayError as exc:
+            return exc
+
+    if not hosts:
+        return {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(hosts), 8)) as pool:
+        return dict(zip(hosts, pool.map(probe, hosts)))
 
 
 def outbound_chain(target: str) -> list[str]:

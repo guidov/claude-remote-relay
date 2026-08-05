@@ -9,7 +9,7 @@ For scripting remote sessions without going through MCP.
 
     relay.py peers
     relay.py send "run the test suite and summarize failures"
-    relay.py send --host bloc --timeout 1800 "refactor the parser"
+    relay.py send --host remote --timeout 1800 "refactor the parser"
     relay.py send --background "full regression run"      # prints a job id
     relay.py result job-abc123 --wait 120
     echo "review this diff" | relay.py send -
@@ -32,8 +32,8 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
 
 from relay_config import (  # noqa: E402
-    RelayError, call, load_hosts, outbound_chain, read_inbound_chain, resolve,
-    self_name,
+    RelayError, call, load_hosts, outbound_chain, peer_health, read_inbound_chain,
+    resolve, self_name,
 )
 from relay_converse import converse  # noqa: E402
 
@@ -76,15 +76,17 @@ def cmd_peers(args: argparse.Namespace) -> int:
     if chain:
         print(f"running a relayed turn from: {' -> '.join(chain)}")
     print()
-    for name, entry in sorted(hosts.items()):
+    names = sorted(hosts)
+    results = peer_health(names)
+    for name in names:
+        entry, health = hosts[name], results[name]
         marker = " (default)" if name == default else ""
-        try:
-            health = call("GET", "/health", host=name, timeout=15.0)
+        if isinstance(health, RelayError):
+            status = f"unreachable ({health.code})"
+        else:
             state = "busy" if health.get("busy") else "idle"
             status = (f"{state:<4} {health.get('platform', '?'):<8} "
                       f"cwd={health.get('cwd', '?')}")
-        except RelayError as exc:
-            status = f"unreachable ({exc.code})"
         print(f"{name}{marker}\n    {entry['url']}\n    {status}")
         if entry.get("description"):
             print(f"    {entry['description']}")
