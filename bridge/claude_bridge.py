@@ -51,7 +51,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 
 
 def _load_token() -> str:
@@ -563,7 +563,14 @@ class Session:
                 "bridge_pid": os.getpid(),
                 "child_pid": proc.pid if proc else None,
                 "exit_code": proc.poll() if proc else None,
+                # The child emits no init event until it has input, so
+                # session_id stays blank right after a restart — exactly when an
+                # operator checks, and exactly the moment it reads as amnesia.
+                # The id we are resuming is known at startup; say so.
                 "session_id": self.session_id,
+                "resuming": None if self.session_id else self._attempted_resume,
+                "session_state": ("active" if self.session_id else
+                                  "resuming" if self._attempted_resume else "fresh"),
                 "busy": self.busy,
                 "pending_jobs": queued,
                 "cursor": self.cursor,

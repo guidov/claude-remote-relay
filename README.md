@@ -418,9 +418,18 @@ Two guards, because both failure modes are silent otherwise:
 `restart --fresh` clears the saved id too, so a deliberate reset is not undone
 by the next reboot.
 
-`/health` reports `session_id: null` between a restart and the first prompt —
-the child does not emit its init event until it has input. That is not a lost
-conversation; send a turn and the id reappears.
+`/health` answers "did my context survive?" directly, via **`session_state`**:
+
+| `session_state` | `session_id` | `resuming` | Meaning |
+| --- | --- | --- | --- |
+| `fresh` | `null` | `null` | New conversation, nothing to resume |
+| `resuming` | `null` | the saved id | Restarted, resume armed, awaiting first turn |
+| `active` | the id | `null` | Child has confirmed the session |
+
+`session_id` comes from the child's init event, which does not arrive until the
+first prompt — so it is blank in the window right after a restart, which is
+precisely when an operator looks. On its own that reads as the amnesia
+persistence exists to prevent. `resuming` is known at startup and says otherwise.
 
 ## Usage
 
