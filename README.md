@@ -268,6 +268,73 @@ Config is searched at `$CLAUDE_RELAY_CONFIG`, then
 `$CLAUDE_PLUGIN_DATA/hosts.json`, then `~/.config/claude-remote-relay/hosts.json`.
 **That file holds bearer tokens — `chmod 600` it.** `hosts.json` is gitignored.
 
+## Running it as a service
+
+A bridge started from a terminal — or from a Claude Code session — dies with
+whatever started it. That inverts the point of the tool: the machine is only
+reachable when someone is already sitting at it. For a peer you actually want to
+drive, run the bridge detached.
+
+**Decide first whether you want this.** An always-on bridge is a standing remote
+code execution surface on that machine, with `acceptEdits` and no one watching.
+That is a real change from "it exists while I'm here". Scope `CLAUDE_BRIDGE_CWD`
+to one directory, keep the bind address on the tailnet, and consider
+`--permission-mode plan` or a stricter mode for an unattended host.
+
+### Windows (Task Scheduler)
+
+Scheduled tasks do not inherit a shell's environment, so persist the settings at
+user scope first, then point a task at the script:
+
+```powershell
+setx CLAUDE_BRIDGE_TOKEN "<the token>"
+setx CLAUDE_BRIDGE_HOST  "100.100.100.10"
+setx CLAUDE_BRIDGE_NAME  "remote"
+setx CLAUDE_BRIDGE_CWD   "C:\path\to\the\project"
+
+$action  = New-ScheduledTaskAction -Execute "python" `
+             -Argument "$HOME\claude-remote-relay\bridge\claude_bridge.py"
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+Register-ScheduledTask -TaskName "claude-relay-bridge" `
+  -Action $action -Trigger $trigger -RunLevel Limited
+```
+
+`setx` writes to the registry under your user — same exposure as a config file,
+readable by that account. Use `-AtStartup` with stored credentials if you need
+it up before anyone logs in. NSSM works too and gives real service semantics
+(auto-restart, recovery policy); Task Scheduler avoids the extra dependency.
+
+### Linux (systemd user unit)
+
+```ini
+# ~/.config/systemd/user/claude-relay-bridge.service
+[Unit]
+Description=Claude Code relay bridge
+After=network-online.target
+
+[Service]
+Environment=CLAUDE_BRIDGE_TOKEN=<the token>
+Environment=CLAUDE_BRIDGE_HOST=100.100.100.20
+Environment=CLAUDE_BRIDGE_NAME=local
+Environment=CLAUDE_BRIDGE_CWD=%h/relay-workspace
+ExecStart=/usr/bin/python3 %h/claude-remote-relay/bridge/claude_bridge.py
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+chmod 600 ~/.config/systemd/user/claude-relay-bridge.service   # holds the token
+systemctl --user daemon-reload
+systemctl --user enable --now claude-relay-bridge
+loginctl enable-linger "$USER"    # survive logout; without this it stops
+```
+
+`Restart=on-failure` covers a crashed bridge. It does **not** restore
+conversation context — a new process starts a new session unless the old
+`session_id` is resumed, which only happens on the in-process restart path.
+
 ## Usage
 
 Just talk: *"ask `remote` what's failing in the test suite"*. Claude routes to the
