@@ -34,7 +34,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.4.2"
+VERSION = "0.5.0"
 
 # Relay-loop protection. When two machines can each drive the other, a prompt
 # can bounce A -> B -> A forever, burning a full turn's tokens per hop. Every

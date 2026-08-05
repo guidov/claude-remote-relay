@@ -287,22 +287,42 @@ Scheduled tasks do not inherit a shell's environment, so persist the settings at
 user scope first, then point a task at the script:
 
 ```powershell
-setx CLAUDE_BRIDGE_TOKEN "<the token>"
-setx CLAUDE_BRIDGE_HOST  "100.100.100.10"
-setx CLAUDE_BRIDGE_NAME  "remote"
-setx CLAUDE_BRIDGE_CWD   "C:\path\to\the\project"
+# SetEnvironmentVariable, not setx: setx truncates at 1024 chars and mangles
+# trailing backslashes, which a Windows path is a natural candidate for.
+[Environment]::SetEnvironmentVariable("CLAUDE_BRIDGE_TOKEN_FILE", "$HOME\.claude-relay-token", "User")
+[Environment]::SetEnvironmentVariable("CLAUDE_BRIDGE_HOST", "100.100.100.10", "User")
+[Environment]::SetEnvironmentVariable("CLAUDE_BRIDGE_NAME", "remote", "User")
+[Environment]::SetEnvironmentVariable("CLAUDE_BRIDGE_CWD",  "C:\path\to\the\project", "User")
 
+$settings = New-ScheduledTaskSettingsSet `
+  -ExecutionTimeLimit ([TimeSpan]::Zero) `   # default is 3 days, then killed
+  -MultipleInstances IgnoreNew `             # never fight over the port
+  -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 $action  = New-ScheduledTaskAction -Execute "python" `
              -Argument "$HOME\claude-remote-relay\bridge\claude_bridge.py"
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 Register-ScheduledTask -TaskName "claude-relay-bridge" `
-  -Action $action -Trigger $trigger -RunLevel Limited
+  -Action $action -Trigger $trigger -Settings $settings -RunLevel Limited
 ```
 
-`setx` writes to the registry under your user — same exposure as a config file,
-readable by that account. Use `-AtStartup` with stored credentials if you need
-it up before anyone logs in. NSSM works too and gives real service semantics
-(auto-restart, recovery policy); Task Scheduler avoids the extra dependency.
+Three things that bite if you skip them:
+
+- **`ExecutionTimeLimit` defaults to 3 days**, after which the task is killed.
+  A bridge that dies silently after 72 hours is the same invisible failure as an
+  amnesiac restart, arriving by another road. `[TimeSpan]::Zero` is unlimited.
+- **`MultipleInstances IgnoreNew`** stops a second instance fighting for 8787 if
+  the trigger fires while one is already up.
+- **`claude` must be on the *persisted* PATH**, not just your shell's. Check with
+  `[Environment]::GetEnvironmentVariable("PATH","User")` before registering. If
+  it is only on a session PATH the task starts cleanly and then fails to spawn a
+  child — which reads like a bridge bug and is not one.
+
+Verify the environment actually reached the task by reading `permission_mode`
+back from `/health`: it can only be right if inheritance worked.
+
+Use `-AtStartup` with stored credentials if you need it up before anyone logs
+in. NSSM works too and gives real service semantics; Task Scheduler avoids the
+extra dependency.
 
 ### Linux (systemd user unit)
 
@@ -331,9 +351,24 @@ systemctl --user enable --now claude-relay-bridge
 loginctl enable-linger "$USER"    # survive logout; without this it stops
 ```
 
-`Restart=on-failure` covers a crashed bridge. It does **not** restore
-conversation context — a new process starts a new session unless the old
-`session_id` is resumed, which only happens on the in-process restart path.
+### The conversation survives a restart
+
+A bridge saves its `session_id` and resumes it on startup, so a service restart
+does not hand the next caller an amnesiac peer. State lives beside the loop
+chain (`~/.cache/claude-remote-relay/session-<port>.json`) and is keyed by port,
+so several bridges on one machine keep separate conversations.
+
+Two guards, because both failure modes are silent otherwise:
+
+- A saved session is **ignored if `CLAUDE_BRIDGE_CWD` has changed** — resuming it
+  elsewhere would hand the peer a conversation about a different project.
+- If the id no longer exists (session store pruned), the child exits with
+  `No conversation found`; the bridge logs it, clears the file and starts fresh.
+  Without that, a stale id would be retried on every restart and the bridge
+  would never come up.
+
+`restart --fresh` clears the saved id too, so a deliberate reset is not undone
+by the next reboot.
 
 ## Usage
 
@@ -521,6 +556,12 @@ Anyone who can reach the port and holds the token can make it edit files and run
 commands. Treat it as remote code execution, because it is.
 
 - Token required, 24 characters minimum, compared with `hmac.compare_digest`.
+- **Prefer `CLAUDE_BRIDGE_TOKEN_FILE` over `CLAUDE_BRIDGE_TOKEN`**, especially for
+  an always-on service. An environment variable is inherited by every child the
+  bridge spawns — the `claude` process and everything it shells out to — so the
+  secret sits in each of their environment blocks. A *path* is not a secret, and
+  the file it names can be locked to one account. This is strictly better than a
+  config file, which an env var is not.
 - Bind to a **specific** address — tailnet IP or `127.0.0.1`, never `0.0.0.0`.
   The bridge warns when you bind to all interfaces.
 - Over Tailscale, WireGuard encrypts the traffic. Over plain LAN this is

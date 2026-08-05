@@ -14,7 +14,8 @@ Requires Python 3.9+ and the `claude` CLI on PATH. No third-party packages.
     python3 claude_bridge.py
 
 Environment:
-    CLAUDE_BRIDGE_TOKEN    required; shared secret for the Authorization header
+    CLAUDE_BRIDGE_TOKEN    shared secret for the Authorization header
+    CLAUDE_BRIDGE_TOKEN_FILE  path to a file holding it; preferred over the var
     CLAUDE_BRIDGE_HOST     bind address (default 127.0.0.1; set to the tailnet IP to expose)
     CLAUDE_BRIDGE_PORT     bind port (default 8787)
     CLAUDE_BRIDGE_NAME     label reported by /health (default: hostname)
@@ -41,14 +42,29 @@ import time
 import uuid
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "shared"))
 
 from relay_config import write_inbound_chain  # noqa: E402
 
-VERSION = "0.4.2"
+VERSION = "0.5.0"
 
-TOKEN = os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
+
+def _load_token() -> str:
+    """Prefer a token file, so the secret is not in the environment block.
+
+    An env var is inherited by every child this bridge spawns — including the
+    `claude` process and everything it shells out to. A path is not a secret;
+    the file it points at can be ACL'd to one account.
+    """
+    path = os.environ.get("CLAUDE_BRIDGE_TOKEN_FILE")
+    if path:
+        return Path(path).read_text(encoding="utf-8").strip()
+    return os.environ.get("CLAUDE_BRIDGE_TOKEN", "")
+
+
+TOKEN = _load_token()
 HOST = os.environ.get("CLAUDE_BRIDGE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("CLAUDE_BRIDGE_PORT", "8787"))
 NAME = os.environ.get("CLAUDE_BRIDGE_NAME") or socket.gethostname()
@@ -59,6 +75,45 @@ EXTRA_ARGS = shlex.split(os.environ.get("CLAUDE_BRIDGE_ARGS", ""))
 STREAM = os.environ.get("CLAUDE_BRIDGE_STREAM", "1") not in ("0", "false", "no")
 
 BRIDGE_STARTED_AT = time.time()
+
+
+def session_state_path() -> Path:
+    """Where this bridge remembers its conversation across process restarts.
+
+    Keyed by port so several bridges on one machine do not share a session.
+    """
+    explicit = os.environ.get("CLAUDE_BRIDGE_SESSION_FILE")
+    if explicit:
+        return Path(explicit)
+    base = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
+    return Path(base) / "claude-remote-relay" / f"session-{PORT}.json"
+
+
+def read_saved_session() -> str | None:
+    path = session_state_path()
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    # A session belongs to the directory it ran in; resuming it elsewhere would
+    # hand the peer a conversation about a different project.
+    if data.get("cwd") != CHILD_CWD:
+        return None
+    session_id = data.get("session_id")
+    return str(session_id) if session_id else None
+
+
+def write_saved_session(session_id: str | None) -> None:
+    path = session_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if session_id:
+        path.write_text(json.dumps({"session_id": session_id, "cwd": CHILD_CWD,
+                                    "written_at": time.time()}), encoding="utf-8")
+    elif path.exists():
+        path.unlink()
+
 
 DEFAULT_TURN_TIMEOUT = 900.0
 EVENT_HISTORY = 4000
@@ -157,7 +212,14 @@ class Session:
         self.jobs: dict[str, Job] = {}
         self.job_order: deque[str] = deque(maxlen=JOB_HISTORY)
         self.subscribers: set[queue.Queue] = set()
-        self.start()
+        self._attempted_resume: str | None = None
+        self._saw_init = False
+        # Pick up where the previous bridge process left off, so a service
+        # restart does not silently hand the next caller an amnesiac peer.
+        resume = read_saved_session()
+        if resume:
+            log(f"resuming saved session {resume}")
+        self.start(resume=resume)
 
     # ---- live watchers ---------------------------------------------------
 
@@ -201,6 +263,8 @@ class Session:
         with self.state:
             self.proc = proc
             self.started_at = time.time()
+            self._attempted_resume = resume
+            self._saw_init = False
             if not resume:
                 self.session_id = None
         threading.Thread(target=self._read_stdout, args=(proc,), daemon=True).start()
@@ -219,6 +283,8 @@ class Session:
 
     def restart(self, resume: bool = True) -> None:
         sid = self.session_id if resume else None
+        if not resume:
+            write_saved_session(None)  # --fresh must not be undone by a reboot
         self.stop()
         self.start(resume=sid)
 
@@ -241,6 +307,17 @@ class Session:
                 continue
             self._record(event)
         log(f"child stdout closed (exit={proc.poll()})")
+        with self.state:
+            current = self.proc is proc
+            stale_resume = current and self._attempted_resume and not self._saw_init
+        if stale_resume:
+            # The saved id no longer exists (session store pruned, or a
+            # different machine wrote it). Without this the bridge would try the
+            # same dead id on every restart and never come up.
+            log(f"resume of {self._attempted_resume} failed; starting a fresh session")
+            write_saved_session(None)
+            self.start(resume=None)
+            return
         # Unblock a caller waiting on a turn that can no longer complete.
         self.results.put({"__child_exited__": True, "exit_code": proc.poll()})
 
@@ -262,8 +339,14 @@ class Session:
             index = self.cursor
             self.events.append((index, event))
             sid = event.get("session_id")
+            changed = bool(sid) and sid != self.session_id
             if sid:
                 self.session_id = sid
+            if event.get("type") == "system" and event.get("subtype") == "init":
+                # Proof the child came up; a failed --resume never gets here.
+                self._saw_init = True
+        if changed:
+            write_saved_session(sid)
         self._fanout({"index": index, "event": event})
         if event.get("type") == "result":
             self.results.put({"index": index, "event": event})
