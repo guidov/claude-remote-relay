@@ -351,6 +351,21 @@ to one directory, keep the bind address on the tailnet, and consider
 
 ### Windows (Task Scheduler)
 
+Two scripts do this and check it, and reading them is a faster route than the
+prose below:
+
+```powershell
+scripts\windows\install-task.ps1   # register the task (logon + heal triggers)
+scripts\windows\check-bridge.ps1   # read-only: is it up, did the session survive
+```
+
+`check-bridge.ps1` never writes. That separation is deliberate — the two were
+one script once, and running a "check" quietly re-registered the task and
+dropped the parts of the action it did not know about.
+
+The rest of this section is what those scripts encode, for when you would
+rather do it by hand.
+
 Scheduled tasks do not inherit a shell's environment, so persist the settings at
 user scope first, then point a task at the script:
 
