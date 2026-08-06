@@ -26,7 +26,7 @@ Environment:
     CLAUDE_BRIDGE_CLAUDE_BIN  full path to `claude` (for a service PATH that omits it)
     CLAUDE_BRIDGE_LOG      write a dated log here (a service discards stdout)
     CLAUDE_BRIDGE_LOG_MAX_BYTES  rotate to .1 past this size (default 5MB)
-    CLAUDE_BRIDGE_BIND_RETRY_S  keep retrying the bind this long (default 180)
+    CLAUDE_BRIDGE_BIND_RETRY_S  keep retrying the bind this long (default 900)
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..
 
 from relay_config import self_name, write_inbound_chain  # noqa: E402
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 
 def _load_token() -> str:
@@ -78,8 +78,11 @@ MODEL = os.environ.get("CLAUDE_BRIDGE_MODEL", "")
 PERMISSION_MODE = os.environ.get("CLAUDE_BRIDGE_PERMISSION_MODE", "acceptEdits")
 EXTRA_ARGS = shlex.split(os.environ.get("CLAUDE_BRIDGE_ARGS", ""))
 STREAM = os.environ.get("CLAUDE_BRIDGE_STREAM", "1") not in ("0", "false", "no")
-# Boot races: the tailnet address may not exist yet when a service starts.
-BIND_RETRY_SECONDS = float(os.environ.get("CLAUDE_BRIDGE_BIND_RETRY_S", "180"))
+# Boot races: the tailnet address may not exist yet when a service starts, and
+# the gap is measured in minutes — see bind_server() for why the default is this
+# generous.
+BIND_RETRY_SECONDS = float(os.environ.get("CLAUDE_BRIDGE_BIND_RETRY_S", "900"))
+BIND_REPORT_SECONDS = 30.0
 # A service manager usually discards stdout, and for an always-on bridge the log
 # is the only forensics there is. Writing it ourselves avoids needing a shell
 # wrapper just to redirect.
@@ -767,22 +770,38 @@ def bind_server() -> ThreadingHTTPServer:
 
     At boot the tailnet interface can come up after this process does, so the
     bind fails with EADDRNOTAVAIL / WinError 10049 and the service dies before
-    it ever serves. Retry instead — the address usually appears seconds later.
+    it ever serves. Retry instead.
+
+    The window is minutes, not seconds, because the observed gap is minutes: on
+    one cold boot the tailnet address did not exist until 11 minutes in. A
+    window shorter than the gap does not cost availability — the watchdog
+    trigger relaunches us, and whichever instance is polling when the address
+    appears binds immediately — but each give-up writes a FATAL traceback that
+    reads like the cause of the outage and is not. One instance that spans the
+    gap leaves a log that says what actually happened.
     """
     deadline = time.time() + BIND_RETRY_SECONDS
     attempt = 0
+    next_report = 0.0
     while True:
         try:
             return ThreadingHTTPServer((HOST, PORT), Handler)
         except OSError as exc:
-            if time.time() >= deadline:
+            now = time.time()
+            if now >= deadline:
                 log(f"giving up binding {HOST}:{PORT} after "
                     f"{BIND_RETRY_SECONDS:.0f}s: {exc}")
                 raise
-            attempt += 1
-            if attempt == 1:
+            if attempt == 0:
                 log(f"cannot bind {HOST}:{PORT} yet ({exc}); "
                     f"retrying for up to {BIND_RETRY_SECONDS:.0f}s")
+                next_report = now + BIND_REPORT_SECONDS
+            elif now >= next_report:
+                # Silence for the whole window is indistinguishable from a hang.
+                log(f"still waiting for {HOST}:{PORT}; "
+                    f"{deadline - now:.0f}s left")
+                next_report = now + BIND_REPORT_SECONDS
+            attempt += 1
             time.sleep(min(2.0 * attempt, 10.0))
 
 

@@ -446,7 +446,15 @@ dies at boot under a service manager otherwise leaves nothing to debug.
 A service can start before its tailnet address exists, and the bind then fails
 with `EADDRNOTAVAIL` (POSIX) or `WinError 10049` — the process dies seconds
 after boot having never served. The bridge retries the bind for
-`CLAUDE_BRIDGE_BIND_RETRY_S` (default 180) instead of exiting.
+`CLAUDE_BRIDGE_BIND_RETRY_S` (default 900) instead of exiting, logging progress
+every 30s so a long wait is visible rather than silent.
+
+The default is generous on purpose. Measured on a cold boot of `bloc`, the
+tailnet address did not exist until **11 minutes** after boot. A window shorter
+than the gap still recovers — the watchdog trigger relaunches the bridge, and
+whichever instance happens to be polling when the address appears binds at once
+— but every give-up writes a `FATAL` traceback that looks like the cause of the
+outage and is not. Prefer one instance that spans the gap.
 
 The bind also happens **before** the `claude` child is spawned, so a bind that
 does fail cannot leave an orphaned child behind with nothing to serve it.
